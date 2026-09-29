@@ -1,0 +1,4 @@
+interface:
+  display_name: "XDB Design Intelligence"
+  short_description: "Evidence-backed web design research and creation"
+  default_prompt: "Use XDB to turn this design request into a traceable plan and generate the configured Figma or HTML outputs."

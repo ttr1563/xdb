@@ -1,0 +1,32 @@
+---
+name: xdb-design-intelligence
+description: Research, plan, create, and evaluate evidence-backed web designs with XDB. Use when a request should produce or assess a web UI, Figma design, HTML concept, or consistent illustration style; do not activate for ordinary code-only changes without design judgment.
+---
+
+# XDB Design Intelligence
+
+Use XDB as a traceable design workflow, not as an ungrounded layout generator. Preserve the path from request to retrieved knowledge, plan, artifacts, and human evaluation.
+
+## Workflow
+
+1. Read `design.config.json` and confirm the requested output mode is enabled.
+2. Send the raw request to `/api/hooks/design-input`. Stop the XDB workflow when the result is `non-design`.
+3. Create a Design Request with audience, objective, concepts, exclusions, and `figma | html | both`.
+4. Generate and inspect the Design Plan before creating external artifacts. Surface missing audience, objective, permissions, or target-file information rather than inventing it.
+5. Create the configured outputs:
+   - HTML is generated locally and must be reviewed at desktop and mobile widths.
+   - Figma requires an existing file and an authorized Figma connection. Read [Figma delivery](references/figma-delivery.md) before executing a generated Figma plan.
+   - Illustration work must use a Style Profile and record both accepted and rejected candidates. Read [Illustration consistency](references/illustration-consistency.md) for that mode.
+6. Treat automatic scores as structural evidence, not human taste. Capture human approval, rejection, revision, or pairwise preference with a reason.
+7. Never mark an external artifact complete when its adapter is disconnected. Preserve the operation plan and report `blocked_external` or `partial`.
+
+## Invariants
+
+- Reuse existing design-system components, variables, and styles before creating equivalents.
+- Use semantic DTCG tokens in the shared plan. Keep tool-specific IDs in adapter artifacts.
+- Keep secrets out of requests, artifacts, logs, and knowledge records.
+- A reference without provenance and usage rights remains `trainingEligible: false`.
+- Do not average incompatible contexts into one universal style. Match knowledge by audience, objective, concept, platform, and artifact purpose.
+- A generated screenshot is evidence for review, never a replacement for editable Figma structure or semantic HTML.
+
+Read [Data contracts](references/data-contracts.md) only when creating integrations, importing data, or diagnosing validation failures.
