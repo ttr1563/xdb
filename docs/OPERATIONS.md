@@ -26,6 +26,7 @@ APIを停止した状態でSQLiteとartifactsをversion付きdirectoryへcopyし
 
 ## Adapter failure
 
+- Claude未接続・timeout・不正出力: `ai_runs`へ失敗理由を記録し、設定で許可されている場合だけlocal plannerへfallbackする。fallbackしたPlanをClaude生成と表示しない。
 - Figma未接続: `blocked_external`または`partial`。生成したplan/scriptを保持して接続後に再実行する。
 - Image provider未設定: Illustration Specだけを保持し、生成完了とは表示しない。
 - Validation failure: artifactをapprovedにせず`revise`とする。
@@ -47,3 +48,4 @@ Application rollbackは、互換migrationを確認した直前commitへ戻し、
 - secret manager
 - reference assetの権利と削除手順
 - Figma／画像providerの費用上限と停止条件
+- Anthropic model、月次／request単位のtoken・費用上限、timeout、fallback停止条件

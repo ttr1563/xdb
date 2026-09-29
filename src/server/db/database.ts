@@ -117,6 +117,25 @@ const migrationOne = `
   CREATE INDEX IF NOT EXISTS idx_evaluations_artifact ON evaluations(artifact_id);
 `;
 
+const migrationTwo = `
+  CREATE TABLE IF NOT EXISTS ai_runs (
+    id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL REFERENCES design_requests(id),
+    purpose TEXT NOT NULL CHECK (purpose IN ('planning')),
+    provider TEXT NOT NULL CHECK (provider IN ('local', 'anthropic')),
+    model TEXT,
+    status TEXT NOT NULL CHECK (status IN ('completed', 'fallback', 'failed')),
+    fallback_used INTEGER NOT NULL CHECK (fallback_used IN (0, 1)),
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    latency_ms INTEGER NOT NULL,
+    error TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_ai_runs_request ON ai_runs(request_id);
+`;
+
 export function openDatabase(databasePath: string): Database.Database {
   mkdirSync(path.dirname(databasePath), { recursive: true });
   const database = new Database(databasePath);
@@ -140,6 +159,20 @@ export function openDatabase(databasePath: string): Database.Database {
       database
         .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
         .run(1, new Date().toISOString());
+      database.exec('COMMIT;');
+    } catch (error) {
+      database.exec('ROLLBACK;');
+      throw error;
+    }
+  }
+
+  if (currentVersion < 2) {
+    database.exec('BEGIN IMMEDIATE;');
+    try {
+      database.exec(migrationTwo);
+      database
+        .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
+        .run(2, new Date().toISOString());
       database.exec('COMMIT;');
     } catch (error) {
       database.exec('ROLLBACK;');

@@ -5,6 +5,18 @@
     "defaultMode": "both",
     "availableModes": ["figma", "html", "both"]
   },
+  "ai": {
+    "defaultProvider": "local",
+    "providers": {
+      "local": { "enabled": true },
+      "anthropic": {
+        "enabled": true,
+        "fallbackToLocal": true,
+        "timeoutMs": 30000,
+        "maxOutputTokens": 4096
+      }
+    }
+  },
   "figma": {
     "enabled": true,
     "requireExistingFile": true,

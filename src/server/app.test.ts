@@ -29,9 +29,17 @@ function createTestApp() {
       artifactsPath: path.join(directory, 'artifacts'),
       figmaMcpServer: null,
       imageProvider: null,
+      anthropic: { apiKey: null, model: null, baseUrl: 'https://api.anthropic.com' },
       design: {
         version: 1,
         output: { defaultMode: 'both', availableModes: ['figma', 'html', 'both'] },
+        ai: {
+          defaultProvider: 'local',
+          providers: {
+            local: { enabled: true },
+            anthropic: { enabled: true, fallbackToLocal: true, timeoutMs: 30_000, maxOutputTokens: 4_096 },
+          },
+        },
         figma: { enabled: true, requireExistingFile: true, reuseExistingComponents: true, reuseExistingVariables: true },
         html: { enabled: true, format: 'standalone', responsive: true, accessibilityTarget: 'WCAG-AA' },
         illustration: { enabled: true, candidateCount: 4, requireHumanApproval: true, storeRejectedCandidates: true },
@@ -102,6 +110,41 @@ describe('XDB API workflow', () => {
     expect(response.statusCode).toBe(422);
     const requests = await app.inject({ method: 'GET', url: '/api/requests' });
     expect(requests.json<unknown[]>()).toHaveLength(0);
+    await app.close();
+    database.close();
+  });
+
+  it('records an explicit local fallback when Claude is selected without credentials', async () => {
+    const { app, database } = createTestApp();
+    const requestResponse = await app.inject({
+      method: 'POST',
+      url: '/api/requests',
+      payload: {
+        prompt: '採用管理サービスのランディングページをデザインしてください',
+        projectName: 'Hiring Flow',
+        audience: '採用担当者',
+        objective: 'デモ予約',
+        concepts: ['明快さ'],
+        avoid: [],
+        outputMode: 'html',
+      },
+    });
+    const designRequest = requestResponse.json<DesignRequest>();
+    const planResponse = await app.inject({
+      method: 'POST',
+      url: '/api/plans',
+      payload: { requestId: designRequest.id, provider: 'anthropic' },
+    });
+    expect(planResponse.statusCode).toBe(201);
+    expect(planResponse.json<DesignPlan>().generation).toEqual({
+      provider: 'local',
+      model: 'xdb-deterministic-v1',
+      fallbackUsed: true,
+    });
+    const aiRuns = await app.inject({ method: 'GET', url: '/api/ai-runs' });
+    expect(aiRuns.json<Array<{ provider: string; status: string; fallbackUsed: boolean }>>()).toEqual([
+      expect.objectContaining({ provider: 'anthropic', status: 'fallback', fallbackUsed: true }),
+    ]);
     await app.close();
     database.close();
   });

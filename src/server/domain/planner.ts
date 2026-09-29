@@ -133,6 +133,11 @@ export function createDesignPlan(
       avoid: [...request.avoid, ...styleProfile.forbiddenTraits].slice(0, 16),
     },
     knowledgeIds: knowledge.map((item) => item.id),
+    generation: {
+      provider: 'local',
+      model: 'xdb-deterministic-v1',
+      fallbackUsed: false,
+    },
     createdAt: new Date().toISOString(),
   };
 }

@@ -3,11 +3,26 @@ import { z } from 'zod';
 export const outputModeSchema = z.enum(['figma', 'html', 'both']);
 export type OutputMode = z.infer<typeof outputModeSchema>;
 
+export const aiProviderSchema = z.enum(['local', 'anthropic']);
+export type AiProvider = z.infer<typeof aiProviderSchema>;
+
 export const designConfigSchema = z.object({
   version: z.literal(1),
   output: z.object({
     defaultMode: outputModeSchema,
     availableModes: z.array(outputModeSchema).min(1),
+  }),
+  ai: z.object({
+    defaultProvider: aiProviderSchema,
+    providers: z.object({
+      local: z.object({ enabled: z.boolean() }),
+      anthropic: z.object({
+        enabled: z.boolean(),
+        fallbackToLocal: z.boolean(),
+        timeoutMs: z.number().int().min(1_000).max(120_000),
+        maxOutputTokens: z.number().int().min(256).max(32_000),
+      }),
+    }),
   }),
   figma: z.object({
     enabled: z.boolean(),
@@ -175,9 +190,30 @@ export const designPlanSchema = z.object({
   tokens: z.array(designTokenSchema).min(8),
   illustration: illustrationSpecSchema.nullable(),
   knowledgeIds: z.array(z.string().uuid()),
+  generation: z.object({
+    provider: aiProviderSchema,
+    model: z.string().min(1),
+    fallbackUsed: z.boolean(),
+  }),
   createdAt: z.string().datetime(),
 });
 export type DesignPlan = z.infer<typeof designPlanSchema>;
+
+export const aiRunSchema = z.object({
+  id: z.string().uuid(),
+  requestId: z.string().uuid(),
+  purpose: z.literal('planning'),
+  provider: aiProviderSchema,
+  model: z.string().min(1).nullable(),
+  status: z.enum(['completed', 'fallback', 'failed']),
+  fallbackUsed: z.boolean(),
+  inputTokens: z.number().int().nonnegative().nullable(),
+  outputTokens: z.number().int().nonnegative().nullable(),
+  latencyMs: z.number().int().nonnegative(),
+  error: z.string().max(1_000).nullable(),
+  createdAt: z.string().datetime(),
+});
+export type AiRun = z.infer<typeof aiRunSchema>;
 
 export const styleProfileInputSchema = z.object({
   name: z.string().min(2).max(100),

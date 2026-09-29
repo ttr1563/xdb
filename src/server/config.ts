@@ -10,6 +10,11 @@ export interface RuntimeConfig {
   artifactsPath: string;
   figmaMcpServer: string | null;
   imageProvider: string | null;
+  anthropic: {
+    apiKey: string | null;
+    model: string | null;
+    baseUrl: string;
+  };
   design: DesignConfig;
 }
 
@@ -35,6 +40,11 @@ export function getRuntimeConfig(cwd = process.cwd()): RuntimeConfig {
     artifactsPath: path.resolve(cwd, process.env.XDB_ARTIFACTS_PATH ?? '.data/artifacts'),
     figmaMcpServer: optionalEnv('XDB_FIGMA_MCP_SERVER'),
     imageProvider: optionalEnv('XDB_IMAGE_PROVIDER'),
+    anthropic: {
+      apiKey: optionalEnv('XDB_ANTHROPIC_API_KEY'),
+      model: optionalEnv('XDB_ANTHROPIC_MODEL'),
+      baseUrl: process.env.XDB_ANTHROPIC_BASE_URL?.trim() || 'https://api.anthropic.com',
+    },
     design,
   };
 }

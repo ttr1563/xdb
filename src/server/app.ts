@@ -6,6 +6,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
 
 import {
+  aiProviderSchema,
   comparisonInputSchema,
   creationRunInputSchema,
   designRequestInputSchema,
@@ -16,13 +17,13 @@ import {
   type DashboardSummary,
 } from '../shared/contracts.js';
 
+import { generateDesignPlan } from './ai/planning.js';
 import { ArtifactStore } from './artifacts/store.js';
 import type { RuntimeConfig } from './config.js';
 import type { Repository } from './db/repository.js';
 import { executeCreation } from './domain/creation.js';
 import { classifyDesignInput } from './domain/intent.js';
 import { rankKnowledge } from './domain/knowledge-ranking.js';
-import { createDesignPlan } from './domain/planner.js';
 import { knowledgeSeeds, styleProfileSeeds } from './domain/seeds.js';
 
 export interface AppDependencies {
@@ -55,8 +56,19 @@ export function buildApp({ repository, config }: AppDependencies): FastifyInstan
     return reply.status(500).send({ error: 'internal_error', message: 'Unexpected server error.' });
   });
 
-  app.get('/api/health', async () => ({ status: 'ok', figmaConnected: Boolean(config.figmaMcpServer) }));
-  app.get('/api/config', async () => ({ design: config.design, capabilities: { figmaConnected: Boolean(config.figmaMcpServer), imageProviderConnected: Boolean(config.imageProvider) } }));
+  app.get('/api/health', async () => ({
+    status: 'ok',
+    figmaConnected: Boolean(config.figmaMcpServer),
+    anthropicConnected: Boolean(config.anthropic.apiKey && config.anthropic.model),
+  }));
+  app.get('/api/config', async () => ({
+    design: config.design,
+    capabilities: {
+      figmaConnected: Boolean(config.figmaMcpServer),
+      imageProviderConnected: Boolean(config.imageProvider),
+      anthropicConnected: Boolean(config.anthropic.apiKey && config.anthropic.model),
+    },
+  }));
 
   app.get('/api/dashboard', async (): Promise<DashboardSummary> => ({
     requests: repository.count('design_requests'),
@@ -96,7 +108,7 @@ export function buildApp({ repository, config }: AppDependencies): FastifyInstan
 
   app.get('/api/plans', async () => repository.listPlans());
   app.post('/api/plans', async (request, reply) => {
-    const body = request.body as { requestId?: unknown };
+    const body = request.body as { requestId?: unknown; provider?: unknown };
     if (typeof body?.requestId !== 'string') {
       return reply.status(400).send({ error: 'requestId_required' });
     }
@@ -105,9 +117,25 @@ export function buildApp({ repository, config }: AppDependencies): FastifyInstan
     const styleProfile = repository.listStyleProfiles()[0];
     if (!styleProfile) return reply.status(409).send({ error: 'style_profile_required' });
     const relevantKnowledge = rankKnowledge(designRequest, repository.listKnowledge());
-    const plan = createDesignPlan(designRequest, relevantKnowledge, styleProfile);
+    const provider = aiProviderSchema.parse(body.provider ?? config.design.ai.defaultProvider);
+    if (provider === 'local' && !config.design.ai.providers.local.enabled) {
+      return reply.status(409).send({ error: 'local_ai_provider_disabled' });
+    }
+    if (provider === 'anthropic' && !config.design.ai.providers.anthropic.enabled) {
+      return reply.status(409).send({ error: 'anthropic_ai_provider_disabled' });
+    }
+    const plan = await generateDesignPlan({
+      provider,
+      request: designRequest,
+      knowledge: relevantKnowledge,
+      styleProfile,
+      config,
+      repository,
+    });
     return reply.status(201).send(repository.savePlan(plan));
   });
+
+  app.get('/api/ai-runs', async () => repository.listAiRuns());
 
   app.get('/api/runs', async () => repository.listRuns());
   app.post('/api/runs', async (request, reply) => {
@@ -150,6 +178,7 @@ export function buildApp({ repository, config }: AppDependencies): FastifyInstan
     styleProfiles: repository.listStyleProfiles(),
     requests: repository.listRequests(),
     plans: repository.listPlans(),
+    aiRuns: repository.listAiRuns(),
     runs: repository.listRuns(),
     evaluations: repository.listEvaluations(),
     comparisons: repository.listComparisons(),

@@ -25,6 +25,8 @@ Input Hook -> Research -> Planning -> Creation -> Evaluation
 - component・variant intent
 - illustration purpose、style profile、safe area、required／avoid条件
 
+Planning providerは`local | anthropic`から選択します。localは決定的なoffline実装です。Anthropic adapterはMessages APIの強制tool callから内容案だけを受け取り、ID、request／knowledge lineage、Style Profile、provider metadata、timestampをserver側で付与します。不正なtool resultはZod validationで拒否します。
+
 ### Creation
 
 AdapterはDesign Planから派生artifactを作ります。
@@ -46,6 +48,7 @@ Figma／HTMLを同時に正本としません。canonical Planを正本、各出
 - SHA-256: artifact integrity
 - JSON export: data portability
 - JSONL export: evaluation／training pipeline用event
+- AI run audit: provider、model、token使用量、latency、fallback、error。credential、prompt全文、response全文は保存しない
 
 画像binaryをSQLiteへ保存しません。将来object storageへ移す際はArtifactStoreだけを交換します。
 

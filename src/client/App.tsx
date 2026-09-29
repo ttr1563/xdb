@@ -1,8 +1,10 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 
 import type {
+  AiProvider,
   CreationRun,
   DashboardSummary,
+  DesignConfig,
   DesignPlan,
   DesignRequest,
   Evaluation,
@@ -16,7 +18,17 @@ import { api } from './api';
 
 type View = 'overview' | 'create' | 'research' | 'illustration' | 'review';
 
+interface PublicConfig {
+  design: DesignConfig;
+  capabilities: {
+    figmaConnected: boolean;
+    imageProviderConnected: boolean;
+    anthropicConnected: boolean;
+  };
+}
+
 interface AppData {
+  config: PublicConfig;
   summary: DashboardSummary;
   knowledge: KnowledgeItem[];
   requests: DesignRequest[];
@@ -125,6 +137,7 @@ function CreateStudio({ data, refresh }: { data: AppData; refresh: () => Promise
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [mode, setMode] = useState<OutputMode>('both');
+  const [provider, setProvider] = useState<AiProvider>(data.config.design.ai.defaultProvider);
 
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -146,7 +159,7 @@ function CreateStudio({ data, refresh }: { data: AppData; refresh: () => Promise
       });
       const plan = await api<DesignPlan>('/api/plans', {
         method: 'POST',
-        body: JSON.stringify({ requestId: request.id }),
+        body: JSON.stringify({ requestId: request.id, provider }),
       });
       const run = await api<CreationRun>('/api/runs', {
         method: 'POST',
@@ -168,6 +181,7 @@ function CreateStudio({ data, refresh }: { data: AppData; refresh: () => Promise
       <section className="studio-grid">
         <form className="panel form-panel" onSubmit={(event) => void submit(event)}>
           <div className="field-row"><label>プロジェクト名<input name="projectName" defaultValue="Invoice Flow" required minLength={2} /></label><label>出力先<div className="segmented">{(['figma', 'html', 'both'] as const).map((value) => <button type="button" className={mode === value ? 'active' : ''} onClick={() => setMode(value)} key={value}>{value}</button>)}</div></label></div>
+          <label>Planning AI<div className="segmented">{(['local', 'anthropic'] as const).filter((value) => data.config.design.ai.providers[value].enabled).map((value) => <button type="button" className={provider === value ? 'active' : ''} onClick={() => setProvider(value)} key={value}>{value === 'anthropic' ? 'Claude' : 'Local'}</button>)}</div><small>{data.config.capabilities.anthropicConnected ? 'Claude接続済み。' : 'Claude未接続時は設定に従ってLocalへfallbackし、履歴へ記録します。'}</small></label>
           <label>要望<textarea name="prompt" defaultValue="個人事業主向け請求書サービスのLPをデザインして。信頼感は必要だが堅すぎず、Heroには一貫したイラストを使いたい。" required minLength={12} rows={5} /></label>
           <div className="field-row"><label>対象ユーザー<input name="audience" defaultValue="ITに詳しくない個人事業主" required /></label><label>主要目的<input name="objective" defaultValue="無料登録への誘導" required /></label></div>
           <div className="field-row"><label>コンセプト <small>カンマ区切り</small><input name="concepts" defaultValue="信頼感, 親しみ, 簡単さ" required /></label><label>避ける表現 <small>カンマ区切り</small><input name="avoid" defaultValue="派手なグラデーション, 過度な3D, 情報過多" /></label></div>
@@ -180,7 +194,7 @@ function CreateStudio({ data, refresh }: { data: AppData; refresh: () => Promise
           <ul>{data.knowledge.slice(0, 3).map((item) => <li key={item.id}><span>{item.kind}</span>{item.title}</li>)}</ul>
         </aside>
       </section>
-      {latestPlan && <section className="panel plan-preview"><div className="panel-heading"><div><p className="kicker">LATEST PLAN</p><h2>{latestPlan.designDirection.primaryConcept}</h2></div><span className="plan-version">v{latestPlan.version}</span></div><p>{latestPlan.rationale}</p><div className="section-flow">{latestPlan.sections.map((section, index) => <div key={section.id}><span>{String(index + 1).padStart(2, '0')}</span><b>{section.type}</b><small>{section.component}</small></div>)}</div></section>}
+      {latestPlan && <section className="panel plan-preview"><div className="panel-heading"><div><p className="kicker">LATEST PLAN · {latestPlan.generation.provider}{latestPlan.generation.fallbackUsed ? ' · FALLBACK' : ''}</p><h2>{latestPlan.designDirection.primaryConcept}</h2></div><span className="plan-version">v{latestPlan.version}</span></div><p>{latestPlan.rationale}</p><div className="section-flow">{latestPlan.sections.map((section, index) => <div key={section.id}><span>{String(index + 1).padStart(2, '0')}</span><b>{section.type}</b><small>{section.component}</small></div>)}</div></section>}
     </div>
   );
 }
@@ -243,16 +257,37 @@ function ReviewStudio({ data, refresh }: { data: AppData; refresh: () => Promise
 
 export function App() {
   const [view, setView] = useState<View>('overview');
-  const [data, setData] = useState<AppData>({ summary: emptySummary, knowledge: [], requests: [], plans: [], runs: [], evaluations: [], styles: [] });
+  const [data, setData] = useState<AppData>({
+    config: {
+      design: {
+        version: 1,
+        output: { defaultMode: 'both', availableModes: ['figma', 'html', 'both'] },
+        ai: { defaultProvider: 'local', providers: { local: { enabled: true }, anthropic: { enabled: false, fallbackToLocal: true, timeoutMs: 30_000, maxOutputTokens: 4_096 } } },
+        figma: { enabled: true, requireExistingFile: true, reuseExistingComponents: true, reuseExistingVariables: true },
+        html: { enabled: true, format: 'standalone', responsive: true, accessibilityTarget: 'WCAG-AA' },
+        illustration: { enabled: true, candidateCount: 4, requireHumanApproval: true, storeRejectedCandidates: true },
+        evaluation: { automatic: true, pairwiseComparison: true, requireHumanReview: true },
+        knowledge: { recordProvenance: true, recordRejectedDesigns: true },
+      },
+      capabilities: { figmaConnected: false, imageProviderConnected: false, anthropicConnected: false },
+    },
+    summary: emptySummary,
+    knowledge: [],
+    requests: [],
+    plans: [],
+    runs: [],
+    evaluations: [],
+    styles: [],
+  });
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
-      const [summary, knowledge, requests, plans, runs, evaluations, styles] = await Promise.all([
-        api<DashboardSummary>('/api/dashboard'), api<KnowledgeItem[]>('/api/knowledge'), api<DesignRequest[]>('/api/requests'), api<DesignPlan[]>('/api/plans'), api<CreationRun[]>('/api/runs'), api<Evaluation[]>('/api/evaluations'), api<StyleProfile[]>('/api/style-profiles'),
+      const [config, summary, knowledge, requests, plans, runs, evaluations, styles] = await Promise.all([
+        api<PublicConfig>('/api/config'), api<DashboardSummary>('/api/dashboard'), api<KnowledgeItem[]>('/api/knowledge'), api<DesignRequest[]>('/api/requests'), api<DesignPlan[]>('/api/plans'), api<CreationRun[]>('/api/runs'), api<Evaluation[]>('/api/evaluations'), api<StyleProfile[]>('/api/style-profiles'),
       ]);
-      setData({ summary, knowledge, requests, plans, runs, evaluations, styles });
+      setData({ config, summary, knowledge, requests, plans, runs, evaluations, styles });
       setError(null);
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'データを取得できません。'); } finally { setLoading(false); }
   }, []);

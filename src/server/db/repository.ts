@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 
 import type {
+  AiRun,
   Artifact,
   ComparisonInput,
   CreationRun,
@@ -177,6 +178,49 @@ export class Repository {
       .run(plan.id, plan.requestId, plan.version, JSON.stringify(plan), plan.createdAt);
     this.setRequestStatus(plan.requestId, 'planned');
     return plan;
+  }
+
+  public createAiRun(input: Omit<AiRun, 'id' | 'createdAt'>): AiRun {
+    const run: AiRun = { ...input, id: randomUUID(), createdAt: now() };
+    this.database
+      .prepare(`
+        INSERT INTO ai_runs (
+          id, request_id, purpose, provider, model, status, fallback_used,
+          input_tokens, output_tokens, latency_ms, error, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        run.id,
+        run.requestId,
+        run.purpose,
+        run.provider,
+        run.model,
+        run.status,
+        run.fallbackUsed ? 1 : 0,
+        run.inputTokens,
+        run.outputTokens,
+        run.latencyMs,
+        run.error,
+        run.createdAt,
+      );
+    return run;
+  }
+
+  public listAiRuns(): AiRun[] {
+    return asRows(this.database.prepare('SELECT * FROM ai_runs ORDER BY created_at DESC').all()).map((row) => ({
+      id: String(row.id),
+      requestId: String(row.request_id),
+      purpose: 'planning',
+      provider: row.provider as AiRun['provider'],
+      model: row.model === null ? null : String(row.model),
+      status: row.status as AiRun['status'],
+      fallbackUsed: Boolean(row.fallback_used),
+      inputTokens: row.input_tokens === null ? null : Number(row.input_tokens),
+      outputTokens: row.output_tokens === null ? null : Number(row.output_tokens),
+      latencyMs: Number(row.latency_ms),
+      error: row.error === null ? null : String(row.error),
+      createdAt: String(row.created_at),
+    }));
   }
 
   public listPlans(): DesignPlan[] {
