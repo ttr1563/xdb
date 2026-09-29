@@ -1,0 +1,47 @@
+{
+  "$schema": "./schemas/design-config.schema.json",
+  "version": 1,
+  "output": {
+    "defaultMode": "both",
+    "availableModes": ["figma", "html", "both"]
+  },
+  "ai": {
+    "defaultProvider": "local",
+    "providers": {
+      "local": { "enabled": true },
+      "anthropic": {
+        "enabled": true,
+        "fallbackToLocal": true,
+        "timeoutMs": 30000,
+        "maxOutputTokens": 4096
+      }
+    }
+  },
+  "figma": {
+    "enabled": true,
+    "requireExistingFile": true,
+    "reuseExistingComponents": true,
+    "reuseExistingVariables": true
+  },
+  "html": {
+    "enabled": true,
+    "format": "standalone",
+    "responsive": true,
+    "accessibilityTarget": "WCAG-AA"
+  },
+  "illustration": {
+    "enabled": true,
+    "candidateCount": 4,
+    "requireHumanApproval": true,
+    "storeRejectedCandidates": true
+  },
+  "evaluation": {
+    "automatic": true,
+    "pairwiseComparison": true,
+    "requireHumanReview": true
+  },
+  "knowledge": {
+    "recordProvenance": true,
+    "recordRejectedDesigns": true
+  }
+}
