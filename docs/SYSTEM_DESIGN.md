@@ -188,13 +188,14 @@ Local plannerはoffline fallbackであると同時に、外部providerの回帰�
 
 ### 8.3 Claude Planning
 
-1. `XDB_ANTHROPIC_API_KEY`、`XDB_ANTHROPIC_MODEL`、provider enablementを確認する。
-2. Request、ranked knowledge、Style Profileを構造化してMessages APIへ送る。
+1. provider enablement、external request gate、credential、model、base URL allowlist、月次token budgetを確認する。
+2. Request、ranked knowledge、Style Profileを構造化して、許可されたMessages APIへ送る。
 3. `submit_design_plan` tool callを強制する。
 4. tool inputをZodで検証する。
 5. ID、request ID、knowledge IDs、Style Profile ID、timestampをserver側で付与する。
-6. provider、model、input/output token、latencyをAiRunへ記録する。
-7. timeout、HTTP error、tool欠落、不正schema時は設定に従ってLocalへfallbackする。
+6. provider、model、input/output token、latency、attempt countをAiRunへ記録する。
+7. 429と5xxだけを上限付きでretryする。timeout、その他HTTP error、tool欠落、不正schemaはretryしない。
+8. failure categoryをAiRunへ記録し、設定に従ってLocalへfallbackする。
 
 Claudeへserver-owned ID、権限、実行成功状態を決めさせません。credential、prompt全文、response全文はAiRunへ保存しません。
 
@@ -325,7 +326,7 @@ multi-user、concurrent worker、remote deployment、large-scale retrievalが必
 
 | Configuration | Location | Examples |
 | --- | --- | --- |
-| Versioned behavior | `design.config.json` | output modes、provider enablement、timeout、human approval |
+| Versioned behavior | `design.config.json` | output modes、provider gate、allowlist、token budget、timeout/retry、human approval |
 | Secret／environment | `.env` or process env | API key、model ID、database path、base URL |
 | Canonical validation | Zod + JSON Schema | enum、limit、required field |
 | User request | API payload | audience、objective、concepts、output mode |
@@ -336,7 +337,7 @@ secretやaccount固有値を`design.config.json`へ置きません。環境変�
 
 - API key、session token、Figma credentialをchat、Git、DB、artifactへ保存しない。
 - promptやreferenceに個人情報・機密情報が含まれる可能性を前提に、外部provider送信を明示選択にする。
-- external base URL変更時はcredential送信先が変わるため、allowlistまたは明示確認を導入する。
+- external base URLはHTTPSかつ`allowedBaseUrls`の完全一致を通過した後だけcredentialを送信する。
 - provenanceにsource URI、license、captured time、training eligibilityを保持する。
 - `trainingEligible`の既定はfalseとする。
 - XDBのMIT Licenseは、登録された画像、font、Figma component、AI出力の第三者権利を許諾しない。
@@ -346,7 +347,7 @@ secretやaccount固有値を`design.config.json`へ置きません。環境変�
 
 外部AI／画像providerは、credentialが存在するだけでは無制限利用可能とみなしません。
 
-必要な制御：
+実装済みの制御：
 
 - request単位のmax output token。
 - timeoutとretry上限。
@@ -354,7 +355,9 @@ secretやaccount固有値を`design.config.json`へ置きません。環境変�
 - provider／modelごとのusage集計。
 - batchや複数candidate生成前の推定消費表示。
 - external callを伴わないLocal preview。
-- timeout、429、5xx時のretryとfallbackを区別したaudit。
+- timeout、429、5xx、その他失敗を区別したaudit。429と5xxだけをretryする。
+
+external requestの既定はOFF、月次token budgetの既定は0です。実行前に記録済みの当月利用量と`maxOutputTokens`を合算し、budgetを超える場合は送信しません。これはlocal preflightであり、未確定のinput token、同時実行、provider側の課金を厳密に停止するhard capではありません。provider account側のbudget／alertを併用し、料金の通貨換算は運用手順で確認します。
 
 retryはidempotentなPlanning read／generationに限定し、Figma writeを自動retryしません。
 
@@ -364,7 +367,7 @@ retryはidempotentなPlanning read／generationに限定し、Figma writeを自�
 | --- | --- | --- |
 | Invalid request | 保存しない | validation error |
 | Non-design input | workflowを開始しない | intentとignore action |
-| Claude未接続 | 設定に従いLocal fallbackまたは503 | actual providerを表示 |
+| Claude外部実行OFF／未接続／予算不足 | 外部送信せずLocal fallbackまたは503 | actual providerとerror codeを表示 |
 | Claude schema不正 | responseを採用しない | fallback／failed audit |
 | HTML generation failure | artifactを保存しない | run failed |
 | Figma未接続 | plan/scriptだけ保存 | partial／blocked_external |

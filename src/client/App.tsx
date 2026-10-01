@@ -2,6 +2,7 @@ import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react
 
 import type {
   AiProvider,
+  AiRun,
   CreationRun,
   DashboardSummary,
   DesignConfig,
@@ -24,6 +25,10 @@ interface PublicConfig {
     figmaConnected: boolean;
     imageProviderConnected: boolean;
     anthropicConnected: boolean;
+    anthropicLiveEnabled: boolean;
+    anthropicBlockReason: string | null;
+    anthropicMonthlyTokensUsed: number;
+    anthropicMonthlyTokenBudget: number;
   };
 }
 
@@ -36,6 +41,7 @@ interface AppData {
   runs: CreationRun[];
   evaluations: Evaluation[];
   styles: StyleProfile[];
+  aiRuns: AiRun[];
 }
 
 const emptySummary: DashboardSummary = {
@@ -175,13 +181,16 @@ function CreateStudio({ data, refresh }: { data: AppData; refresh: () => Promise
   }
 
   const latestPlan = data.plans[0];
+  const anthropicStatus = data.config.capabilities.anthropicLiveEnabled
+    ? 'Claude外部実行が有効です。利用量と実行結果は履歴へ記録されます。'
+    : `Claude外部実行は停止中です（${data.config.capabilities.anthropicBlockReason ?? 'provider_disabled'}）。選択時は設定に従ってLocalへfallbackします。`;
   return (
     <div className="view-stack">
       <header className="page-heading"><div><p className="kicker">CREATE / 02</p><h1>デザインを計画し、<br />形にする。</h1></div><p>要望を構造化し、関連ナレッジを根拠としてDesign Planを生成します。</p></header>
       <section className="studio-grid">
         <form className="panel form-panel" onSubmit={(event) => void submit(event)}>
           <div className="field-row"><label>プロジェクト名<input name="projectName" defaultValue="Invoice Flow" required minLength={2} /></label><label>出力先<div className="segmented">{(['figma', 'html', 'both'] as const).map((value) => <button type="button" className={mode === value ? 'active' : ''} onClick={() => setMode(value)} key={value}>{value}</button>)}</div></label></div>
-          <label>Planning AI<div className="segmented">{(['local', 'anthropic'] as const).filter((value) => data.config.design.ai.providers[value].enabled).map((value) => <button type="button" className={provider === value ? 'active' : ''} onClick={() => setProvider(value)} key={value}>{value === 'anthropic' ? 'Claude' : 'Local'}</button>)}</div><small>{data.config.capabilities.anthropicConnected ? 'Claude接続済み。' : 'Claude未接続時は設定に従ってLocalへfallbackし、履歴へ記録します。'}</small></label>
+          <label>Planning AI<div className="segmented">{(['local', 'anthropic'] as const).filter((value) => data.config.design.ai.providers[value].enabled).map((value) => <button type="button" className={provider === value ? 'active' : ''} onClick={() => setProvider(value)} key={value}>{value === 'anthropic' ? 'Claude' : 'Local'}</button>)}</div><small>{anthropicStatus}</small></label>
           <label>要望<textarea name="prompt" defaultValue="個人事業主向け請求書サービスのLPをデザインして。信頼感は必要だが堅すぎず、Heroには一貫したイラストを使いたい。" required minLength={12} rows={5} /></label>
           <div className="field-row"><label>対象ユーザー<input name="audience" defaultValue="ITに詳しくない個人事業主" required /></label><label>主要目的<input name="objective" defaultValue="無料登録への誘導" required /></label></div>
           <div className="field-row"><label>コンセプト <small>カンマ区切り</small><input name="concepts" defaultValue="信頼感, 親しみ, 簡単さ" required /></label><label>避ける表現 <small>カンマ区切り</small><input name="avoid" defaultValue="派手なグラデーション, 過度な3D, 情報過多" /></label></div>
@@ -195,6 +204,10 @@ function CreateStudio({ data, refresh }: { data: AppData; refresh: () => Promise
         </aside>
       </section>
       {latestPlan && <section className="panel plan-preview"><div className="panel-heading"><div><p className="kicker">LATEST PLAN · {latestPlan.generation.provider}{latestPlan.generation.fallbackUsed ? ' · FALLBACK' : ''}</p><h2>{latestPlan.designDirection.primaryConcept}</h2></div><span className="plan-version">v{latestPlan.version}</span></div><p>{latestPlan.rationale}</p><div className="section-flow">{latestPlan.sections.map((section, index) => <div key={section.id}><span>{String(index + 1).padStart(2, '0')}</span><b>{section.type}</b><small>{section.component}</small></div>)}</div></section>}
+      <section className="panel ai-audit">
+        <div className="panel-heading"><div><p className="kicker">AI RUN AUDIT</p><h2>Planning実行履歴</h2></div><span>{data.config.capabilities.anthropicMonthlyTokensUsed} / {data.config.capabilities.anthropicMonthlyTokenBudget} monthly tokens</span></div>
+        {data.aiRuns.length === 0 ? <EmptyState>まだPlanning実行履歴がありません。</EmptyState> : <div className="ai-run-list">{data.aiRuns.slice(0, 6).map((run) => <article key={run.id}><div><StatusBadge status={run.status} /><b>{run.provider}{run.model ? ` · ${run.model}` : ''}</b><time>{formatDate(run.createdAt)}</time></div><p>{run.inputTokens === null && run.outputTokens === null ? 'tokens not reported' : `${(run.inputTokens ?? 0) + (run.outputTokens ?? 0)} tokens`} · {run.latencyMs} ms · {run.attemptCount} attempts</p>{run.errorCode && <small>{run.errorCode}: {run.error}</small>}</article>)}</div>}
+      </section>
     </div>
   );
 }
@@ -262,14 +275,14 @@ export function App() {
       design: {
         version: 1,
         output: { defaultMode: 'both', availableModes: ['figma', 'html', 'both'] },
-        ai: { defaultProvider: 'local', providers: { local: { enabled: true }, anthropic: { enabled: false, fallbackToLocal: true, timeoutMs: 30_000, maxOutputTokens: 4_096 } } },
+        ai: { defaultProvider: 'local', providers: { local: { enabled: true }, anthropic: { enabled: false, allowExternalRequests: false, fallbackToLocal: true, allowedBaseUrls: ['https://api.anthropic.com'], timeoutMs: 30_000, maxOutputTokens: 4_096, maxRetries: 1, retryBaseDelayMs: 500, monthlyTokenBudget: 0 } } },
         figma: { enabled: true, requireExistingFile: true, reuseExistingComponents: true, reuseExistingVariables: true },
         html: { enabled: true, format: 'standalone', responsive: true, accessibilityTarget: 'WCAG-AA' },
         illustration: { enabled: true, candidateCount: 4, requireHumanApproval: true, storeRejectedCandidates: true },
         evaluation: { automatic: true, pairwiseComparison: true, requireHumanReview: true },
         knowledge: { recordProvenance: true, recordRejectedDesigns: true },
       },
-      capabilities: { figmaConnected: false, imageProviderConnected: false, anthropicConnected: false },
+      capabilities: { figmaConnected: false, imageProviderConnected: false, anthropicConnected: false, anthropicLiveEnabled: false, anthropicBlockReason: 'external_requests_disabled', anthropicMonthlyTokensUsed: 0, anthropicMonthlyTokenBudget: 0 },
     },
     summary: emptySummary,
     knowledge: [],
@@ -278,16 +291,17 @@ export function App() {
     runs: [],
     evaluations: [],
     styles: [],
+    aiRuns: [],
   });
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
-      const [config, summary, knowledge, requests, plans, runs, evaluations, styles] = await Promise.all([
-        api<PublicConfig>('/api/config'), api<DashboardSummary>('/api/dashboard'), api<KnowledgeItem[]>('/api/knowledge'), api<DesignRequest[]>('/api/requests'), api<DesignPlan[]>('/api/plans'), api<CreationRun[]>('/api/runs'), api<Evaluation[]>('/api/evaluations'), api<StyleProfile[]>('/api/style-profiles'),
+      const [config, summary, knowledge, requests, plans, runs, evaluations, styles, aiRuns] = await Promise.all([
+        api<PublicConfig>('/api/config'), api<DashboardSummary>('/api/dashboard'), api<KnowledgeItem[]>('/api/knowledge'), api<DesignRequest[]>('/api/requests'), api<DesignPlan[]>('/api/plans'), api<CreationRun[]>('/api/runs'), api<Evaluation[]>('/api/evaluations'), api<StyleProfile[]>('/api/style-profiles'), api<AiRun[]>('/api/ai-runs'),
       ]);
-      setData({ config, summary, knowledge, requests, plans, runs, evaluations, styles });
+      setData({ config, summary, knowledge, requests, plans, runs, evaluations, styles, aiRuns });
       setError(null);
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'データを取得できません。'); } finally { setLoading(false); }
   }, []);

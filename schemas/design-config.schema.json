@@ -41,12 +41,22 @@
             "anthropic": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["enabled", "fallbackToLocal", "timeoutMs", "maxOutputTokens"],
+              "required": ["enabled", "allowExternalRequests", "fallbackToLocal", "allowedBaseUrls", "timeoutMs", "maxOutputTokens", "maxRetries", "retryBaseDelayMs", "monthlyTokenBudget"],
               "properties": {
                 "enabled": { "type": "boolean" },
+                "allowExternalRequests": { "type": "boolean" },
                 "fallbackToLocal": { "type": "boolean" },
+                "allowedBaseUrls": {
+                  "type": "array",
+                  "items": { "type": "string", "format": "uri" },
+                  "minItems": 1,
+                  "uniqueItems": true
+                },
                 "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 120000 },
-                "maxOutputTokens": { "type": "integer", "minimum": 256, "maximum": 32000 }
+                "maxOutputTokens": { "type": "integer", "minimum": 256, "maximum": 32000 },
+                "maxRetries": { "type": "integer", "minimum": 0, "maximum": 2 },
+                "retryBaseDelayMs": { "type": "integer", "minimum": 100, "maximum": 10000 },
+                "monthlyTokenBudget": { "type": "integer", "minimum": 0 }
               }
             }
           }

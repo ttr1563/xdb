@@ -136,6 +136,12 @@ const migrationTwo = `
   CREATE INDEX IF NOT EXISTS idx_ai_runs_request ON ai_runs(request_id);
 `;
 
+const migrationThree = `
+  ALTER TABLE ai_runs ADD COLUMN error_code TEXT;
+  ALTER TABLE ai_runs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0;
+  CREATE INDEX IF NOT EXISTS idx_ai_runs_provider_created ON ai_runs(provider, created_at);
+`;
+
 export function openDatabase(databasePath: string): Database.Database {
   mkdirSync(path.dirname(databasePath), { recursive: true });
   const database = new Database(databasePath);
@@ -173,6 +179,20 @@ export function openDatabase(databasePath: string): Database.Database {
       database
         .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
         .run(2, new Date().toISOString());
+      database.exec('COMMIT;');
+    } catch (error) {
+      database.exec('ROLLBACK;');
+      throw error;
+    }
+  }
+
+  if (currentVersion < 3) {
+    database.exec('BEGIN IMMEDIATE;');
+    try {
+      database.exec(migrationThree);
+      database
+        .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
+        .run(3, new Date().toISOString());
       database.exec('COMMIT;');
     } catch (error) {
       database.exec('ROLLBACK;');
