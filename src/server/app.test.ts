@@ -1,10 +1,11 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { CreationRun, DesignPlan, DesignRequest } from '../shared/contracts.js';
+import type { CreationRun, DesignPlan, DesignRequest, PlanFamily } from '../shared/contracts.js';
 
 import { buildApp } from './app.js';
 import type { RuntimeConfig } from './config.js';
@@ -68,6 +69,126 @@ function createTestApp(
 }
 
 describe('XDB API workflow', () => {
+  it('creates distinct local candidates and only accepts a comparable pair', async () => {
+    const { app, database } = createTestApp();
+    const requestResponse = await app.inject({
+      method: 'POST',
+      url: '/api/requests',
+      payload: {
+        prompt: '個人事業主向け請求書サービスのLPを複数案デザインしてください',
+        projectName: 'Invoice Candidates',
+        audience: '個人事業主',
+        objective: '無料登録への誘導',
+        concepts: ['信頼感', '親しみ'],
+        avoid: ['過度な3D'],
+        outputMode: 'html',
+      },
+    });
+    const designRequest = requestResponse.json<DesignRequest>();
+    const familyResponse = await app.inject({
+      method: 'POST',
+      url: '/api/plan-families',
+      payload: { requestId: designRequest.id },
+    });
+    expect(familyResponse.statusCode).toBe(201);
+    const familyResult = familyResponse.json<{ family: PlanFamily; plans: DesignPlan[] }>();
+    expect(familyResult.plans).toHaveLength(3);
+    expect(new Set(familyResult.plans.map((plan) => plan.fingerprint)).size).toBe(3);
+
+    const runs: CreationRun[] = [];
+    for (const plan of familyResult.plans.slice(0, 2)) {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/runs',
+        payload: { planId: plan.id, outputMode: 'html', figmaFileKey: null },
+      });
+      runs.push(response.json<CreationRun>());
+    }
+    const artifactA = runs[0]?.artifacts.find((artifact) => artifact.kind === 'html');
+    const artifactB = runs[1]?.artifacts.find((artifact) => artifact.kind === 'html');
+    if (!artifactA || !artifactB) throw new Error('Expected HTML candidate artifacts.');
+
+    const invalidPreference = await app.inject({
+      method: 'POST',
+      url: '/api/comparisons',
+      payload: {
+        requestId: designRequest.id,
+        artifactAId: artifactA.id,
+        artifactBId: artifactB.id,
+        preferredArtifactId: randomUUID(),
+        rationale: '比較対象外を選択',
+      },
+    });
+    expect(invalidPreference.statusCode).toBe(400);
+
+    const sameArtifact = await app.inject({
+      method: 'POST',
+      url: '/api/comparisons',
+      payload: {
+        requestId: designRequest.id,
+        artifactAId: artifactA.id,
+        artifactBId: artifactA.id,
+        preferredArtifactId: artifactA.id,
+        rationale: '同一成果物は比較しない',
+      },
+    });
+    expect(sameArtifact.statusCode).toBe(400);
+
+    const otherFamilyResponse = await app.inject({
+      method: 'POST',
+      url: '/api/plan-families',
+      payload: { requestId: designRequest.id, strategies: ['conservative', 'expressive'] },
+    });
+    const otherPlan = otherFamilyResponse.json<{ plans: DesignPlan[] }>().plans[0];
+    if (!otherPlan) throw new Error('Expected another family candidate.');
+    const otherRunResponse = await app.inject({
+      method: 'POST',
+      url: '/api/runs',
+      payload: { planId: otherPlan.id, outputMode: 'html', figmaFileKey: null },
+    });
+    const otherArtifact = otherRunResponse.json<CreationRun>().artifacts.find((artifact) => artifact.kind === 'html');
+    if (!otherArtifact) throw new Error('Expected another HTML candidate artifact.');
+    const familyMismatch = await app.inject({
+      method: 'POST',
+      url: '/api/comparisons',
+      payload: {
+        requestId: designRequest.id,
+        artifactAId: artifactA.id,
+        artifactBId: otherArtifact.id,
+        preferredArtifactId: artifactA.id,
+        rationale: '別familyとの比較は保存しない',
+      },
+    });
+    expect(familyMismatch.statusCode).toBe(409);
+
+    const comparisonResponse = await app.inject({
+      method: 'POST',
+      url: '/api/comparisons',
+      payload: {
+        requestId: designRequest.id,
+        artifactAId: artifactA.id,
+        artifactBId: artifactB.id,
+        preferredArtifactId: artifactA.id,
+        rationale: '情報階層がより明確で主要導線を理解しやすい。',
+      },
+    });
+    expect(comparisonResponse.statusCode).toBe(201);
+
+    const exportResponse = await app.inject({ method: 'GET', url: '/api/export' });
+    const exported = exportResponse.json<{ comparisonContexts: Array<Record<string, unknown>> }>();
+    expect(exported.comparisonContexts).toEqual([
+      expect.objectContaining({
+        request: expect.objectContaining({ id: designRequest.id }),
+        candidateA: expect.objectContaining({ familyId: familyResult.family.id, viewport: 'responsive-desktop-mobile' }),
+        candidateB: expect.objectContaining({ familyId: familyResult.family.id, contentCompleteness: 'complete' }),
+      }),
+    ]);
+    const requests = await app.inject({ method: 'GET', url: '/api/requests' });
+    expect(requests.json<DesignRequest>()[0]?.status).toBe('reviewed');
+    await app.close();
+    database.close();
+  });
+
   it('runs request -> plan -> both adapters and reports external Figma blocking', async () => {
     const { app, database } = createTestApp();
     const requestResponse = await app.inject({

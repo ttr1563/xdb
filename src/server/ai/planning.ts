@@ -5,6 +5,7 @@ import type {
   DesignRequest,
   KnowledgeItem,
   StyleProfile,
+  VariantStrategy,
 } from '../../shared/contracts.js';
 import type { RuntimeConfig } from '../config.js';
 import type { Repository } from '../db/repository.js';
@@ -19,6 +20,11 @@ interface PlanningInput {
   styleProfile: StyleProfile;
   config: RuntimeConfig;
   repository: Repository;
+  variant?: {
+    familyId: string;
+    strategy: VariantStrategy;
+    candidateIndex: number;
+  };
 }
 
 export class PlanningProviderError extends Error {
@@ -60,7 +66,7 @@ function configurationError(code: NonNullable<AiRun['errorCode']>, message: stri
 }
 
 function localPlan(input: PlanningInput, fallbackUsed: boolean): DesignPlan {
-  const plan = createDesignPlan(input.request, input.knowledge, input.styleProfile);
+  const plan = createDesignPlan(input.request, input.knowledge, input.styleProfile, input.variant);
   return { ...plan, generation: { ...plan.generation, fallbackUsed } };
 }
 

@@ -14,6 +14,7 @@ Use XDB as a traceable design workflow, not as an ungrounded layout generator. P
 3. Create a Design Request with audience, objective, concepts, exclusions, and `figma | html | both`.
 4. Generate and inspect the Design Plan before creating external artifacts. Surface missing audience, objective, permissions, or target-file information rather than inventing it.
    - Select `local` for deterministic offline planning or `anthropic` for Claude planning. Read [Claude provider](references/claude-provider.md) before configuring or diagnosing Claude.
+   - For comparison work, use `xdb_create_plan_family` to create distinct local `conservative`, `expressive`, and `conversion-led` candidates. Do not batch external providers without a confirmed budget.
 5. Create the configured outputs:
    - HTML is generated locally and must be reviewed at desktop and mobile widths.
    - Figma requires an existing file and an authorized Figma connection. Read [Figma delivery](references/figma-delivery.md) before executing a generated Figma plan.

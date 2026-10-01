@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import type {
   AiProvider,
   ComparisonInput,
@@ -10,6 +12,8 @@ import type {
   EvaluationInput,
   InputHookResult,
   KnowledgeItem,
+  PlanFamily,
+  PlanFamilyInput,
 } from '../../shared/contracts.js';
 import { generateDesignPlan } from '../ai/planning.js';
 import type { ArtifactStore } from '../artifacts/store.js';
@@ -91,6 +95,36 @@ export class XdbService {
     return this.dependencies.repository.savePlan(plan);
   }
 
+  public async createPlanFamily(input: PlanFamilyInput): Promise<{ family: PlanFamily; plans: DesignPlan[] }> {
+    const request = this.requireRequest(input.requestId);
+    const styleProfile = this.dependencies.repository.listStyleProfiles()[0];
+    if (!styleProfile) throw new ApplicationError('style_profile_required', 409, 'A Style Profile is required.');
+    const family: PlanFamily = {
+      id: randomUUID(),
+      requestId: request.id,
+      provider: 'local',
+      strategies: input.strategies,
+      createdAt: new Date().toISOString(),
+    };
+    const knowledge = this.searchKnowledge(request.id);
+    const plans: DesignPlan[] = [];
+    for (const [candidateIndex, strategy] of input.strategies.entries()) {
+      plans.push(await generateDesignPlan({
+        provider: 'local',
+        request,
+        knowledge,
+        styleProfile,
+        config: this.dependencies.config,
+        repository: this.dependencies.repository,
+        variant: { familyId: family.id, strategy, candidateIndex },
+      }));
+    }
+    if (new Set(plans.map((plan) => plan.fingerprint)).size !== plans.length) {
+      throw new ApplicationError('duplicate_plan_candidate', 409, 'Candidate strategies produced duplicate plans.');
+    }
+    return this.dependencies.repository.savePlanFamily(family, plans);
+  }
+
   public async createArtifacts(input: CreationRunInput): Promise<CreationRun> {
     const config = this.dependencies.config.design;
     if (!config.output.availableModes.includes(input.outputMode)) {
@@ -116,7 +150,62 @@ export class XdbService {
   }
 
   public compareArtifacts(input: ComparisonInput): { id: string; createdAt: string } & ComparisonInput {
+    if (input.artifactAId === input.artifactBId) {
+      throw new ApplicationError('comparison_requires_distinct_artifacts', 409, 'Comparison artifacts must be distinct.');
+    }
+    const artifactA = this.dependencies.repository.getArtifact(input.artifactAId);
+    const artifactB = this.dependencies.repository.getArtifact(input.artifactBId);
+    if (!artifactA || !artifactB) {
+      throw new ApplicationError('comparison_artifact_not_found', 404, 'One or both comparison artifacts were not found.');
+    }
+    if (artifactA.kind !== 'html' || artifactB.kind !== 'html') {
+      throw new ApplicationError('comparison_viewport_incompatible', 409, 'Only responsive HTML candidates are comparable.');
+    }
+    if (artifactA.sha256 === artifactB.sha256) {
+      throw new ApplicationError('comparison_duplicate_artifact', 409, 'Duplicate artifacts cannot be comparison labels.');
+    }
+    const runA = this.dependencies.repository.getRun(artifactA.runId);
+    const runB = this.dependencies.repository.getRun(artifactB.runId);
+    const planA = runA ? this.dependencies.repository.getPlan(runA.planId) : null;
+    const planB = runB ? this.dependencies.repository.getPlan(runB.planId) : null;
+    if (!planA || !planB) {
+      throw new ApplicationError('comparison_lineage_missing', 409, 'Comparison candidate lineage is incomplete.');
+    }
+    if (planA.requestId !== input.requestId || planB.requestId !== input.requestId || planA.familyId !== planB.familyId) {
+      throw new ApplicationError('comparison_context_mismatch', 409, 'Candidates must belong to the same Request and Plan Family.');
+    }
+    if (planA.fingerprint === planB.fingerprint) {
+      throw new ApplicationError('comparison_duplicate_plan', 409, 'Duplicate plans cannot be comparison labels.');
+    }
+    const contentSignature = (plan: DesignPlan) => plan.sections.map((section) => section.type).sort().join(':');
+    if (contentSignature(planA) !== contentSignature(planB)) {
+      throw new ApplicationError('comparison_content_incomplete', 409, 'Candidates must have equivalent content coverage.');
+    }
     return this.dependencies.repository.createComparison(input);
+  }
+
+  public listComparisonContexts(): Array<Record<string, unknown>> {
+    return this.dependencies.repository.listComparisons().map((comparison) => {
+      const request = this.dependencies.repository.getRequest(comparison.requestId);
+      const describe = (artifactId: string) => {
+        const artifact = this.dependencies.repository.getArtifact(artifactId);
+        const run = artifact ? this.dependencies.repository.getRun(artifact.runId) : null;
+        const plan = run ? this.dependencies.repository.getPlan(run.planId) : null;
+        return artifact && plan ? {
+          artifactId,
+          artifactSha256: artifact.sha256,
+          planId: plan.id,
+          familyId: plan.familyId,
+          variantStrategy: plan.variantStrategy,
+          provider: plan.generation.provider,
+          model: plan.generation.model,
+          knowledgeIds: plan.knowledgeIds,
+          viewport: 'responsive-desktop-mobile',
+          contentCompleteness: 'complete',
+        } : null;
+      };
+      return { comparison, request, candidateA: describe(comparison.artifactAId), candidateB: describe(comparison.artifactBId) };
+    });
   }
 
   public getRunStatus(runId: string): CreationRun {

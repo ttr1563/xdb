@@ -10,6 +10,7 @@ import {
   designRequestInputSchema,
   evaluationInputSchema,
   inputHookSchema,
+  planFamilyInputSchema,
   type Artifact,
 } from '../../shared/contracts.js';
 import { ApplicationError, type XdbService } from '../application/xdb-service.js';
@@ -181,6 +182,22 @@ export function createXdbMcpServer({ service, repository }: McpDependencies): Mc
       const payload = { requestId, provider };
       const operation = await executeIdempotent(repository, 'xdb_create_plan', idempotencyKey, payload, async () =>
         jsonRecord({ plan: await service.createPlan(requestId, provider) }),
+      );
+      return textResult(withReplay(operation.result, operation.replayed));
+    },
+  );
+
+  server.registerTool(
+    'xdb_create_plan_family',
+    {
+      title: 'Create a local Design Plan family',
+      description: 'Create two or three distinct local candidates for one Design Request without external provider calls.',
+      inputSchema: planFamilyInputSchema.extend({ idempotencyKey: idempotencyKeySchema }),
+      annotations: writeAnnotations,
+    },
+    async ({ idempotencyKey, ...input }) => {
+      const operation = await executeIdempotent(repository, 'xdb_create_plan_family', idempotencyKey, input, async () =>
+        jsonRecord(await service.createPlanFamily(input)),
       );
       return textResult(withReplay(operation.result, operation.replayed));
     },

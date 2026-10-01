@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import type {
   DesignPlan,
@@ -7,17 +7,41 @@ import type {
   DesignToken,
   KnowledgeItem,
   StyleProfile,
+  VariantStrategy,
 } from '../../shared/contracts.js';
 
-function planSections(request: DesignRequest): DesignSection[] {
+interface PlanVariant {
+  familyId?: string;
+  strategy?: VariantStrategy;
+  candidateIndex?: number;
+}
+
+const directionByStrategy: Record<VariantStrategy, DesignPlan['designDirection']> = {
+  baseline: { primaryConcept: '', secondaryConcepts: [], density: 'medium', contrast: 'moderate', shape: 'balanced', motion: 'subtle' },
+  conservative: { primaryConcept: '', secondaryConcepts: [], density: 'low', contrast: 'soft', shape: 'balanced', motion: 'none' },
+  expressive: { primaryConcept: '', secondaryConcepts: [], density: 'medium', contrast: 'strong', shape: 'soft', motion: 'expressive' },
+  'conversion-led': { primaryConcept: '', secondaryConcepts: [], density: 'high', contrast: 'strong', shape: 'precise', motion: 'subtle' },
+};
+
+export function designPlanFingerprint(plan: Omit<DesignPlan, 'fingerprint'>): string {
+  return createHash('sha256').update(JSON.stringify({
+    designDirection: plan.designDirection,
+    sections: plan.sections,
+    tokens: plan.tokens,
+    illustration: plan.illustration,
+  })).digest('hex');
+}
+
+function planSections(request: DesignRequest, strategy: VariantStrategy): DesignSection[] {
   const project = request.projectName;
+  const strategyLabel = strategy === 'baseline' ? 'balanced' : strategy;
   return [
     {
       id: 'navigation',
       type: 'navigation',
       purpose: '主要導線とブランドの現在地を短時間で伝える',
       component: 'NavigationBar',
-      variant: 'quiet-with-primary-action',
+      variant: `${strategyLabel}-primary-action`,
       headline: project,
       body: '機能、価値、利用開始への短い導線',
     },
@@ -26,7 +50,7 @@ function planSections(request: DesignRequest): DesignSection[] {
       type: 'hero',
       purpose: request.objective,
       component: 'SplitHero',
-      variant: 'copy-left-visual-right',
+      variant: `${strategyLabel}-hero`,
       headline: `${project}で、迷わず次の一歩へ。`,
       body: `${request.audience}に向けて、複雑さを減らし価値を明確に伝えます。`,
     },
@@ -35,7 +59,7 @@ function planSections(request: DesignRequest): DesignSection[] {
       type: 'trust',
       purpose: '主張の根拠を早い段階で示す',
       component: 'TrustStrip',
-      variant: 'evidence-led',
+      variant: `${strategyLabel}-evidence`,
       headline: '選ばれる理由を、事実で。',
       body: '数値、利用者の声、運用上の安心材料を簡潔に提示します。',
     },
@@ -44,7 +68,7 @@ function planSections(request: DesignRequest): DesignSection[] {
       type: 'features',
       purpose: '機能ではなく利用者が得る変化を説明する',
       component: 'FeatureGrid',
-      variant: 'three-outcomes',
+      variant: `${strategyLabel}-outcomes`,
       headline: '必要なことに、集中できる設計。',
       body: '理解、実行、継続の三つの観点から価値を整理します。',
     },
@@ -78,7 +102,7 @@ function planSections(request: DesignRequest): DesignSection[] {
   ];
 }
 
-function planTokens(primaryConcept: string): DesignToken[] {
+function planTokens(primaryConcept: string, strategy: VariantStrategy): DesignToken[] {
   const warm = ['親しみ', 'warm', 'approachable', 'friendly'].some((term) =>
     primaryConcept.toLocaleLowerCase('ja').includes(term),
   );
@@ -87,8 +111,8 @@ function planTokens(primaryConcept: string): DesignToken[] {
     { name: 'color.surface.raised', type: 'color', value: '#FFFFFF', description: 'カードと前景面' },
     { name: 'color.text.primary', type: 'color', value: '#17211C', description: '主要テキスト' },
     { name: 'color.text.muted', type: 'color', value: '#5D6861', description: '補助テキスト' },
-    { name: 'color.action.primary', type: 'color', value: warm ? '#CA5A34' : '#16634A', description: '主要操作' },
-    { name: 'color.accent.soft', type: 'color', value: warm ? '#F2CDBF' : '#C8DDD4', description: '弱い強調面' },
+    { name: 'color.action.primary', type: 'color', value: strategy === 'expressive' ? '#7C3AED' : strategy === 'conversion-led' ? '#C2410C' : warm ? '#CA5A34' : '#16634A', description: '主要操作' },
+    { name: 'color.accent.soft', type: 'color', value: strategy === 'expressive' ? '#DDD6FE' : strategy === 'conversion-led' ? '#FED7AA' : warm ? '#F2CDBF' : '#C8DDD4', description: '弱い強調面' },
     { name: 'space.sm', type: 'dimension', value: { value: 8, unit: 'px' }, description: '小さな間隔' },
     { name: 'space.md', type: 'dimension', value: { value: 16, unit: 'px' }, description: '標準間隔' },
     { name: 'space.lg', type: 'dimension', value: { value: 32, unit: 'px' }, description: 'section内の大きな間隔' },
@@ -104,24 +128,27 @@ export function createDesignPlan(
   request: DesignRequest,
   knowledge: KnowledgeItem[],
   styleProfile: StyleProfile,
+  variant: PlanVariant = {},
 ): DesignPlan {
+  const id = randomUUID();
+  const strategy = variant.strategy ?? 'baseline';
   const [primaryConcept, ...secondaryConcepts] = request.concepts;
   const concept = primaryConcept ?? '明快さ';
-  return {
-    id: randomUUID(),
+  const plan: Omit<DesignPlan, 'fingerprint'> = {
+    id,
     requestId: request.id,
+    familyId: variant.familyId ?? id,
+    variantStrategy: strategy,
+    candidateIndex: variant.candidateIndex ?? 0,
     version: 1,
-    rationale: `${request.audience}が${request.objective}へ迷わず進めるよう、${concept}を主軸に情報階層と視線誘導を設計します。過去ナレッジ${knowledge.length}件を参照し、主張・根拠・行動の順で構成します。`,
+    rationale: `${request.audience}が${request.objective}へ迷わず進めるよう、${concept}を主軸に${strategy}戦略で情報階層と視線誘導を設計します。過去ナレッジ${knowledge.length}件を参照し、主張・根拠・行動の順で構成します。`,
     designDirection: {
+      ...directionByStrategy[strategy],
       primaryConcept: concept,
       secondaryConcepts,
-      density: 'medium',
-      contrast: 'moderate',
-      shape: 'balanced',
-      motion: 'subtle',
     },
-    sections: planSections(request),
-    tokens: planTokens(concept),
+    sections: planSections(request, strategy),
+    tokens: planTokens(concept, strategy),
     illustration: {
       purpose: 'hero',
       subject: `${request.audience}が${request.objective}を達成する場面`,
@@ -140,4 +167,5 @@ export function createDesignPlan(
     },
     createdAt: new Date().toISOString(),
   };
+  return { ...plan, fingerprint: designPlanFingerprint(plan) };
 }

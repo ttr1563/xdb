@@ -235,6 +235,7 @@ Claudeへserver-owned ID、権限、実行成功状態を決めさせません�
 | `GET/POST /api/style-profiles` | Style Profile取得・登録 |
 | `GET/POST /api/requests` | Design Request取得・登録 |
 | `GET/POST /api/plans` | Plan取得・provider指定生成 |
+| `GET/POST /api/plan-families` | Localの複数戦略候補を一つのfamilyとして生成 |
 | `GET /api/ai-runs` | provider実行監査 |
 | `GET/POST /api/runs` | Creation Run取得・実行 |
 | `GET/POST /api/evaluations` | 絶対評価取得・登録 |
@@ -254,6 +255,7 @@ MCPは新しい正本やbusiness logicを持たず、HTTPと同じ`XdbService`�
 - `xdb_search_knowledge`
 - `xdb_create_request`
 - `xdb_create_plan`
+- `xdb_create_plan_family`
 - `xdb_create_artifacts`
 - `xdb_record_evaluation`
 - `xdb_compare_artifacts`
@@ -295,7 +297,7 @@ domain writeとoperation完了記録の間でprocessが停止すると結果は�
 
 ## 11. Multiple candidate design
 
-次フェーズでは、同一Requestから複数候補を生成できるようにします。
+Local plannerは、同一Requestから比較可能な複数候補を一つのPlan Familyとして生成します。外部providerのbatch実行はtoken／費用承認前には行いません。
 
 ```text
 DesignRequest
@@ -305,9 +307,9 @@ DesignRequest
       -> Candidate C: compact / conversion-led
 ```
 
-候補差分はrandomnessだけにせず、`variantStrategy`、`candidateIndex`、`provider`、`model`、`knowledgeIds`を保存します。比較対象は同じRequest、同じ目的、互換viewport、同じcontent completenessを満たす必要があります。
+候補差分はrandomnessだけにせず、`familyId`、`variantStrategy`、`candidateIndex`、plan fingerprint、`provider`、`model`、`knowledgeIds`を保存します。初期strategyは`conservative`、`expressive`、`conversion-led`です。比較対象は同じRequestとPlan Family、responsive HTML、同じsection coverageを満たす必要があります。
 
-同一HTMLを再生成しただけの候補は比較学習へ使用しません。artifact hashとPlan差分で重複を除外します。
+同一HTMLを再生成しただけの候補は比較学習へ使用しません。artifact SHA-256とPlan fingerprintで重複を除外し、比較exportにはRequest、strategy、provider、model、knowledge lineage、viewport、content completenessを含めます。
 
 ## 12. Storage and migration
 

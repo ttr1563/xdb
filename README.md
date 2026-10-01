@@ -26,7 +26,7 @@ Design Request
 | 機能 | 内容 | 外部接続なし |
 | --- | --- | --- |
 | Research | 評価理由、文脈、コンセプト、出典、利用許可をナレッジとして保存 | 利用可能 |
-| Planning | LocalまたはClaudeで根拠付きDesign Planを生成 | Localのみ利用可能 |
+| Planning | LocalまたはClaudeで根拠付きDesign Planを生成。Localでは3戦略の比較候補を生成 | Localのみ利用可能 |
 | HTML | semantic／responsiveなstandalone HTMLを生成・比較 | 利用可能 |
 | Figma | operation planと`use_figma`実行scriptを生成 | plan生成まで可能 |
 | Illustration | Style Profile、構図、safe area、禁止表現を仕様化 | 仕様生成まで可能 |
@@ -77,9 +77,9 @@ npm start
 1. Overviewから「新しいデザインを始める」を選ぶ。
 2. プロジェクト名、対象ユーザー、目的、コンセプト、避ける表現を入力する。
 3. Planning AIを`Local | Claude`、出力先を`figma | html | both`から選ぶ。
-4. Researchから関連ナレッジが検索され、Design Planが生成される。
+4. Researchから関連ナレッジが検索される。Localでは`conservative`、`expressive`、`conversion-led`のPlan Family、Claudeでは単一Planが生成される。
 5. HTML previewまたはFigma operation planを確認する。
-6. Evaluateで採否、スコア、比較理由を保存し、次のPlanningへ利用する。
+6. Evaluateで同じPlan Familyの互換候補を比較し、採否、スコア、比較理由を保存する。
 
 ## Claudeを使う
 
@@ -132,7 +132,7 @@ codex mcp list
 公開tool：
 
 - read: `xdb_classify_design_input`、`xdb_search_knowledge`、`xdb_get_run_status`
-- write: `xdb_create_request`、`xdb_create_plan`、`xdb_create_artifacts`、`xdb_record_evaluation`、`xdb_compare_artifacts`
+- write: `xdb_create_request`、`xdb_create_plan`、`xdb_create_plan_family`、`xdb_create_artifacts`、`xdb_record_evaluation`、`xdb_compare_artifacts`
 - resource: `xdb://artifact/{artifactId}`
 
 write toolは8〜128文字の`idempotencyKey`を必須とします。同じkeyとpayloadは完了済みの場合だけ保存結果を返し、別payloadへの再利用は拒否します。実行中、失敗済み、またはprocess停止等で結果不明になったkeyからdomain処理を自動再実行しません。保存状態を照合し、安全を確認した場合だけ新しいkeyで明示的に実行してください。`xdb_create_artifacts`はHTMLとFigma operation planをlocal生成しますが、Figmaへの外部writeは実行しません。
