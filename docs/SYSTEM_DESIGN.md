@@ -219,7 +219,7 @@ Claudeへserver-owned ID、権限、実行成功状態を決めさせません�
 4. comparisonから直接普遍ルールを作らず、request文脈と共にResearchへ返す。
 5. 十分な反復で安定した傾向だけをpattern／principle候補へ昇格する。
 
-現在の比較APIはpreferred artifactがA/BのどちらかであることをDB制約で保証しています。同一Request由来か、同じviewport／content completenessかの検証はMultiple Candidateフェーズで追加します。それまでは比較結果を機械学習labelとして自動採用しません。
+現在の比較APIは、preferred artifactがA/BのどちらかであることをDB制約で保証します。application層では、異なるartifact hash／Plan fingerprint、同一Request／Plan Family、HTMLによる共通responsive viewport、同じsection type構成によるcontent completenessを検証します。比較結果はRequest、candidate lineage、生成provider／model、参照knowledgeと共にexportしますが、context taxonomyとdataset qualityを整備するまではretrievalや機械学習labelへ自動反映しません。
 
 ## 9. API design
 
