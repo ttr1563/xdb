@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { designConfigSchema, type DesignConfig } from '../shared/contracts.js';
@@ -24,6 +24,8 @@ function optionalEnv(name: string): string | null {
 }
 
 export function getRuntimeConfig(cwd = process.cwd()): RuntimeConfig {
+  const envPath = path.resolve(cwd, '.env');
+  if (existsSync(envPath)) process.loadEnvFile(envPath);
   const port = Number(process.env.XDB_PORT ?? 4310);
   if (!Number.isInteger(port) || port < 1 || port > 65_535) {
     throw new Error('XDB_PORT must be an integer between 1 and 65535.');

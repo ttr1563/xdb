@@ -106,6 +106,39 @@ Claude未接続、外部実行OFF、予算不足、timeout、rate limit、upstre
 
 Claude Codeからrepositoryを開く場合は、rootの[CLAUDE.md](CLAUDE.md)が共通XDB Skillを読み込みます。Claude Codeからも同じAPI・Design Plan・評価契約を使用します。
 
+## Claude Code・CodexからMCPで使う
+
+XDBはlocal stdio MCP serverを提供します。HTTP endpointや外部portは開きません。先に依存packageを導入してください。
+
+```bash
+npm install
+```
+
+Claude Codeはrepository直下の`.mcp.json`を読みます。初回はworkspaceとproject-scope serverを確認・承認し、接続状態を確認します。
+
+```bash
+claude mcp get xdb
+```
+
+Codexは次のようにlocal stdio commandを登録します。`/absolute/path/to/xdb`は実際のrepository絶対pathへ置き換えます。
+
+```bash
+codex mcp add xdb -- \
+  /absolute/path/to/xdb/node_modules/.bin/tsx \
+  /absolute/path/to/xdb/src/server/mcp/main.ts
+codex mcp list
+```
+
+公開tool：
+
+- read: `xdb_classify_design_input`、`xdb_search_knowledge`、`xdb_get_run_status`
+- write: `xdb_create_request`、`xdb_create_plan`、`xdb_create_artifacts`、`xdb_record_evaluation`、`xdb_compare_artifacts`
+- resource: `xdb://artifact/{artifactId}`
+
+write toolは8〜128文字の`idempotencyKey`を必須とします。同じkeyとpayloadの再実行は保存済み結果を返し、同じkeyの別payload利用は拒否します。`xdb_create_artifacts`はHTMLとFigma operation planをlocal生成しますが、Figmaへの外部writeは実行しません。
+
+CodexのMCP登録形式は[OpenAI公式MCP手順](https://developers.openai.com/learn/docs-mcp)、Claude Codeのproject-scope承認は[Claude Code公式MCP手順](https://code.claude.com/docs/en/mcp)を参照してください。
+
 ## 検証
 
 ```bash
@@ -133,6 +166,7 @@ npm run build
 - `GET /api/export`: 全domain dataのversion付きJSON
 - `GET /api/export/evaluations.jsonl`: 評価履歴のJSONL
 - `GET /api/ai-runs`: AI provider、model、token使用量、latency、試行回数、fallback、error codeの監査履歴
+- local stdio MCP: HTTP APIと同じapplication serviceをClaude Code・Codexから呼び出す
 
 外部referenceは公開されているだけでは学習利用可能とみなしません。source、license、capture time、training eligibilityを個別に記録します。
 

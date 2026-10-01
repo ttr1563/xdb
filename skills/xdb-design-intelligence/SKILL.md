@@ -10,7 +10,7 @@ Use XDB as a traceable design workflow, not as an ungrounded layout generator. P
 ## Workflow
 
 1. Read `design.config.json` and confirm the requested output mode is enabled.
-2. Send the raw request to `/api/hooks/design-input`. Stop the XDB workflow when the result is `non-design`.
+2. When the XDB MCP server is available, call `xdb_classify_design_input`; otherwise send the raw request to `/api/hooks/design-input`. Stop the XDB workflow when the result is `non-design`.
 3. Create a Design Request with audience, objective, concepts, exclusions, and `figma | html | both`.
 4. Generate and inspect the Design Plan before creating external artifacts. Surface missing audience, objective, permissions, or target-file information rather than inventing it.
    - Select `local` for deterministic offline planning or `anthropic` for Claude planning. Read [Claude provider](references/claude-provider.md) before configuring or diagnosing Claude.
@@ -20,6 +20,7 @@ Use XDB as a traceable design workflow, not as an ungrounded layout generator. P
    - Illustration work must use a Style Profile and record both accepted and rejected candidates. Read [Illustration consistency](references/illustration-consistency.md) for that mode.
 6. Treat automatic scores as structural evidence, not human taste. Capture human approval, rejection, revision, or pairwise preference with a reason.
 7. Never mark an external artifact complete when its adapter is disconnected. Preserve the operation plan and report `blocked_external` or `partial`.
+8. Supply a stable, operation-specific `idempotencyKey` to every MCP write tool. Reuse it only when retrying the same payload.
 
 ## Invariants
 

@@ -142,6 +142,22 @@ const migrationThree = `
   CREATE INDEX IF NOT EXISTS idx_ai_runs_provider_created ON ai_runs(provider, created_at);
 `;
 
+const migrationFour = `
+  CREATE TABLE IF NOT EXISTS mcp_operations (
+    idempotency_key TEXT PRIMARY KEY,
+    tool TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+    result_json TEXT,
+    error TEXT,
+    lease_expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_mcp_operations_updated ON mcp_operations(updated_at);
+`;
+
 export function openDatabase(databasePath: string): Database.Database {
   mkdirSync(path.dirname(databasePath), { recursive: true });
   const database = new Database(databasePath);
@@ -193,6 +209,20 @@ export function openDatabase(databasePath: string): Database.Database {
       database
         .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
         .run(3, new Date().toISOString());
+      database.exec('COMMIT;');
+    } catch (error) {
+      database.exec('ROLLBACK;');
+      throw error;
+    }
+  }
+
+  if (currentVersion < 4) {
+    database.exec('BEGIN IMMEDIATE;');
+    try {
+      database.exec(migrationFour);
+      database
+        .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
+        .run(4, new Date().toISOString());
       database.exec('COMMIT;');
     } catch (error) {
       database.exec('ROLLBACK;');

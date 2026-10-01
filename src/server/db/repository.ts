@@ -20,6 +20,12 @@ import type {
 
 type SqlRow = Record<string, unknown>;
 
+export type McpOperationClaim =
+  | { state: 'execute' }
+  | { state: 'replay'; result: Record<string, unknown> }
+  | { state: 'in_progress' }
+  | { state: 'conflict' };
+
 function asRows(value: unknown[]): SqlRow[] {
   return value as SqlRow[];
 }
@@ -309,6 +315,73 @@ export class Repository {
       artifacts: asRows(artifactQuery.all(String(row.id))).map((artifactRow) => toArtifact(artifactRow)),
       createdAt: String(row.created_at),
     }));
+  }
+
+  public getRun(id: string): CreationRun | null {
+    const row = asRow(this.database.prepare('SELECT * FROM creation_runs WHERE id = ?').get(id));
+    if (!row) return null;
+    const artifacts = asRows(
+      this.database.prepare('SELECT * FROM artifacts WHERE run_id = ? ORDER BY created_at').all(id),
+    ).map((artifactRow) => toArtifact(artifactRow));
+    return {
+      id: String(row.id),
+      planId: String(row.plan_id),
+      outputMode: row.output_mode as CreationRun['outputMode'],
+      figmaFileKey: row.figma_file_key === null ? null : String(row.figma_file_key),
+      status: row.status as CreationRun['status'],
+      summary: String(row.summary),
+      artifacts,
+      createdAt: String(row.created_at),
+    };
+  }
+
+  public getArtifact(id: string): Artifact | null {
+    const row = asRow(this.database.prepare('SELECT * FROM artifacts WHERE id = ?').get(id));
+    return row ? toArtifact(row) : null;
+  }
+
+  public claimMcpOperation(idempotencyKey: string, tool: string, requestHash: string): McpOperationClaim {
+    return this.database.transaction((): McpOperationClaim => {
+      const timestamp = now();
+      const leaseExpiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+      const row = asRow(this.database.prepare('SELECT * FROM mcp_operations WHERE idempotency_key = ?').get(idempotencyKey));
+      if (!row) {
+        this.database.prepare(`
+          INSERT INTO mcp_operations (
+            idempotency_key, tool, request_hash, status, result_json, error,
+            lease_expires_at, created_at, updated_at
+          ) VALUES (?, ?, ?, 'running', NULL, NULL, ?, ?, ?)
+        `).run(idempotencyKey, tool, requestHash, leaseExpiresAt, timestamp, timestamp);
+        return { state: 'execute' };
+      }
+      if (row.tool !== tool || row.request_hash !== requestHash) return { state: 'conflict' };
+      if (row.status === 'completed') {
+        return { state: 'replay', result: parseJson<Record<string, unknown>>(row.result_json) };
+      }
+      if (row.status === 'running' && String(row.lease_expires_at) > timestamp) return { state: 'in_progress' };
+      this.database.prepare(`
+        UPDATE mcp_operations
+        SET status = 'running', result_json = NULL, error = NULL, lease_expires_at = ?, updated_at = ?
+        WHERE idempotency_key = ?
+      `).run(leaseExpiresAt, timestamp, idempotencyKey);
+      return { state: 'execute' };
+    })();
+  }
+
+  public completeMcpOperation(idempotencyKey: string, result: Record<string, unknown>): void {
+    this.database.prepare(`
+      UPDATE mcp_operations
+      SET status = 'completed', result_json = ?, error = NULL, updated_at = ?
+      WHERE idempotency_key = ?
+    `).run(JSON.stringify(result), now(), idempotencyKey);
+  }
+
+  public failMcpOperation(idempotencyKey: string, error: string): void {
+    this.database.prepare(`
+      UPDATE mcp_operations
+      SET status = 'failed', error = ?, updated_at = ?
+      WHERE idempotency_key = ?
+    `).run(error.slice(0, 1_000), now(), idempotencyKey);
   }
 
   public createEvaluation(input: EvaluationInput): Evaluation {

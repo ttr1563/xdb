@@ -244,11 +244,11 @@ Claudeへserver-owned ID、権限、実行成功状態を決めさせません�
 
 生成artifactは`/artifacts/`配下でlocal previewへ配信します。public deploymentでは認証・公開範囲・cache policyを別途定義するまで、この経路を外部公開しません。
 
-### Planned MCP facade
+### MCP facade
 
-MCPは新しい正本やbusiness logicを持たず、HTTP application serviceと同じuse caseを呼ぶthin adapterとします。
+MCPは新しい正本やbusiness logicを持たず、HTTPと同じ`XdbService`のuse caseを呼ぶthin adapterです。初期transportはlocal stdioだけで、HTTP MCP endpointは公開しません。
 
-初期tool候補：
+初期tool：
 
 - `xdb_classify_design_input`
 - `xdb_search_knowledge`
@@ -259,7 +259,9 @@ MCPは新しい正本やbusiness logicを持たず、HTTP application serviceと
 - `xdb_compare_artifacts`
 - `xdb_get_run_status`
 
-MCP responseは巨大なHTMLやbinaryを直接返さず、summary、ID、resource URI、次に必要なactionを返します。write toolはreadと分離し、外部Figma writeを暗黙実行しません。
+MCP responseは巨大なHTMLやbinaryを直接返さず、summary、ID、`xdb://artifact/{artifactId}` resource URIを返します。write toolはreadと分離し、外部Figma writeを暗黙実行しません。
+
+write toolは`idempotencyKey`を必須とし、`mcp_operations`にtool、request hash、lease、status、返却値を保持します。同じkeyとpayloadは完了済み結果をreplayし、別payloadはconflictとして拒否します。失敗は監査し、再実行でleaseを再取得できます。
 
 ## 10. Output adapter design
 
