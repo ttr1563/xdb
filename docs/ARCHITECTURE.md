@@ -1,5 +1,7 @@
 # Architecture
 
+この文書はarchitectureの概要です。責務、data model、状態遷移、API、adapter、security、failure、test、将来ML境界を含む詳細設計は[System Design](SYSTEM_DESIGN.md)を参照してください。
+
 ## Domain boundaries
 
 ```text
