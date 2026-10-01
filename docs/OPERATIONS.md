@@ -8,6 +8,7 @@
 .data/xdb.sqlite
 .data/artifacts/
 design.config.json
+.mcp.json
 ```
 
 `.data/`はGit管理しません。運用データを保持する場合は、SQLiteとartifactsを同じ時点でbackupしてください。
@@ -32,6 +33,9 @@ APIを停止した状態でSQLiteとartifactsをversion付きdirectoryへcopyし
 - Image provider未設定: Illustration Specだけを保持し、生成完了とは表示しない。
 - Validation failure: artifactをapprovedにせず`revise`とする。
 - 重複実行: 将来のlive adapterは`tool_runs.idempotency_key`を必須にする。
+- MCP writeの重複実行: `mcp_operations`のkeyとrequest hashでreplay／conflictを判定する。owner tokenでlease更新とterminal transitionをfenceする。完了済み結果だけをreplayし、running、期限切れ、failedのkeyではdomain処理を自動再実行しない。
+- MCP writeの結果不明: process停止等でleaseが期限切れになった操作は`operation_outcome_unknown`とする。Request、Plan、Run、評価の保存状態とartifactを照合し、副作用がないと確認できた場合だけ新しいkeyで実行する。
+- MCP process停止: stdio child processだけが停止し、HTTP API・UI・SQLiteの保存データは継続利用できる。
 
 ## Rollback
 

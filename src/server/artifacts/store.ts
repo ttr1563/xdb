@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { Artifact } from '../../shared/contracts.js';
@@ -29,5 +29,14 @@ export class ArtifactStore {
       sha256: createHash('sha256').update(content).digest('hex'),
       createdAt: new Date().toISOString(),
     };
+  }
+
+  public async read(relativePath: string): Promise<string> {
+    const root = path.resolve(this.root);
+    const absolutePath = path.resolve(root, relativePath);
+    if (!absolutePath.startsWith(`${root}${path.sep}`)) {
+      throw new Error('Artifact path escaped the configured artifact root.');
+    }
+    return readFile(absolutePath, 'utf8');
   }
 }

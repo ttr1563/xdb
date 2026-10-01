@@ -20,6 +20,16 @@ import type {
 
 type SqlRow = Record<string, unknown>;
 
+export type McpOperationClaim =
+  | { state: 'execute'; ownerToken: string }
+  | { state: 'replay'; result: Record<string, unknown> }
+  | { state: 'in_progress' }
+  | { state: 'indeterminate' }
+  | { state: 'failed' }
+  | { state: 'conflict' };
+
+const mcpLeaseDurationMs = 5 * 60_000;
+
 function asRows(value: unknown[]): SqlRow[] {
   return value as SqlRow[];
 }
@@ -309,6 +319,83 @@ export class Repository {
       artifacts: asRows(artifactQuery.all(String(row.id))).map((artifactRow) => toArtifact(artifactRow)),
       createdAt: String(row.created_at),
     }));
+  }
+
+  public getRun(id: string): CreationRun | null {
+    const row = asRow(this.database.prepare('SELECT * FROM creation_runs WHERE id = ?').get(id));
+    if (!row) return null;
+    const artifacts = asRows(
+      this.database.prepare('SELECT * FROM artifacts WHERE run_id = ? ORDER BY created_at').all(id),
+    ).map((artifactRow) => toArtifact(artifactRow));
+    return {
+      id: String(row.id),
+      planId: String(row.plan_id),
+      outputMode: row.output_mode as CreationRun['outputMode'],
+      figmaFileKey: row.figma_file_key === null ? null : String(row.figma_file_key),
+      status: row.status as CreationRun['status'],
+      summary: String(row.summary),
+      artifacts,
+      createdAt: String(row.created_at),
+    };
+  }
+
+  public getArtifact(id: string): Artifact | null {
+    const row = asRow(this.database.prepare('SELECT * FROM artifacts WHERE id = ?').get(id));
+    return row ? toArtifact(row) : null;
+  }
+
+  public claimMcpOperation(idempotencyKey: string, tool: string, requestHash: string): McpOperationClaim {
+    return this.database.transaction((): McpOperationClaim => {
+      const timestamp = now();
+      const leaseExpiresAt = new Date(Date.now() + mcpLeaseDurationMs).toISOString();
+      const row = asRow(this.database.prepare('SELECT * FROM mcp_operations WHERE idempotency_key = ?').get(idempotencyKey));
+      if (!row) {
+        const ownerToken = randomUUID();
+        this.database.prepare(`
+          INSERT INTO mcp_operations (
+            idempotency_key, tool, request_hash, status, result_json, error,
+            lease_expires_at, created_at, updated_at, owner_token
+          ) VALUES (?, ?, ?, 'running', NULL, NULL, ?, ?, ?, ?)
+        `).run(idempotencyKey, tool, requestHash, leaseExpiresAt, timestamp, timestamp, ownerToken);
+        return { state: 'execute', ownerToken };
+      }
+      if (row.tool !== tool || row.request_hash !== requestHash) return { state: 'conflict' };
+      if (row.status === 'completed') {
+        return { state: 'replay', result: parseJson<Record<string, unknown>>(row.result_json) };
+      }
+      if (row.status === 'failed') return { state: 'failed' };
+      if (row.status === 'running' && String(row.lease_expires_at) > timestamp) return { state: 'in_progress' };
+      return { state: 'indeterminate' };
+    })();
+  }
+
+  public renewMcpOperation(idempotencyKey: string, ownerToken: string): boolean {
+    const timestamp = now();
+    const leaseExpiresAt = new Date(Date.now() + mcpLeaseDurationMs).toISOString();
+    const update = this.database.prepare(`
+      UPDATE mcp_operations
+      SET lease_expires_at = ?, updated_at = ?
+      WHERE idempotency_key = ? AND owner_token = ? AND status = 'running'
+    `).run(leaseExpiresAt, timestamp, idempotencyKey, ownerToken);
+    return update.changes === 1;
+  }
+
+  public completeMcpOperation(idempotencyKey: string, ownerToken: string, result: Record<string, unknown>): void {
+    const update = this.database.prepare(`
+      UPDATE mcp_operations
+      SET status = 'completed', result_json = ?, error = NULL, updated_at = ?
+      WHERE idempotency_key = ? AND owner_token = ? AND status = 'running'
+    `).run(JSON.stringify(result), now(), idempotencyKey, ownerToken);
+    if (update.changes !== 1) throw new Error('MCP operation ownership was lost before completion.');
+  }
+
+  public failMcpOperation(idempotencyKey: string, ownerToken: string, error: string): void {
+    const update = this.database.prepare(`
+      UPDATE mcp_operations
+      SET status = 'failed', error = ?, updated_at = ?
+      WHERE idempotency_key = ? AND owner_token = ? AND status = 'running'
+    `).run(error.slice(0, 1_000), now(), idempotencyKey, ownerToken);
+    if (update.changes !== 1) throw new Error('MCP operation ownership was lost before failure could be recorded.');
   }
 
   public createEvaluation(input: EvaluationInput): Evaluation {

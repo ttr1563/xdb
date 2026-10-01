@@ -11,11 +11,13 @@
     "dev": "concurrently -k -n api,web -c cyan,magenta \"npm:dev:api\" \"npm:dev:web\"",
     "dev:api": "tsx watch src/server/main.ts",
     "dev:web": "vite",
+    "dev:mcp": "tsx src/server/mcp/main.ts",
     "build": "npm run clean && npm run build:web && npm run build:server",
     "build:web": "vite build",
     "build:server": "tsc -p tsconfig.server.json",
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "start": "node dist/server/server/main.js",
+    "start:mcp": "node dist/server/server/mcp/main.js",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
@@ -24,6 +26,7 @@
   },
   "dependencies": {
     "@fastify/static": "10.1.5",
+    "@modelcontextprotocol/server": "^2.2.0",
     "better-sqlite3": "13.0.3",
     "fastify": "5.12.5",
     "react": "19.3.0",
@@ -31,6 +34,7 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "^2.2.0",
     "@types/better-sqlite3": "9.6.0",
     "@types/node": "24.19.0",
     "@types/react": "19.3.0",

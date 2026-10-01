@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "xdb": {
+      "type": "stdio",
+      "command": "./node_modules/.bin/tsx",
+      "args": ["src/server/mcp/main.ts"]
+    }
+  }
+}
