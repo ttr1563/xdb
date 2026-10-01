@@ -26,7 +26,8 @@ APIを停止した状態でSQLiteとartifactsをversion付きdirectoryへcopyし
 
 ## Adapter failure
 
-- Claude未接続・timeout・不正出力: `ai_runs`へ失敗理由を記録し、設定で許可されている場合だけlocal plannerへfallbackする。fallbackしたPlanをClaude生成と表示しない。
+- Claude外部実行OFF・未接続・予算不足・timeout・不正出力: `ai_runs`へerror codeと試行回数を記録し、設定で許可されている場合だけlocal plannerへfallbackする。fallbackしたPlanをClaude生成と表示しない。
+- Claude 429・5xx: `maxRetries`回だけexponential backoff後にretryする。timeout、4xx（429以外）、schema不正、network errorは自動retryしない。
 - Figma未接続: `blocked_external`または`partial`。生成したplan/scriptを保持して接続後に再実行する。
 - Image provider未設定: Illustration Specだけを保持し、生成完了とは表示しない。
 - Validation failure: artifactをapprovedにせず`revise`とする。
@@ -35,6 +36,14 @@ APIを停止した状態でSQLiteとartifactsをversion付きdirectoryへcopyし
 ## Rollback
 
 Application rollbackは、互換migrationを確認した直前commitへ戻し、対応するDB/artifact snapshotを復元します。既に外部Figmaへ適用した変更はGit rollbackでは戻らないため、Figma version historyまたは記録済みnode IDsを用いて別途戻します。
+
+## Anthropic model lifecycle
+
+1. Anthropic account側で現在利用可能なmodel ID、単価、retirement日を確認する。
+2. `allowExternalRequests: false`のまま`.env`の`XDB_ANTHROPIC_MODEL`だけを更新する。
+3. mock testとLocal workflowを検証し、request token上限と月次token／費用上限を再計算する。
+4. ユーザー確認後に`monthlyTokenBudget`と`allowExternalRequests` を有効化し、1 requestだけlive testする。
+5. UIまたは`GET /api/ai-runs`でmodel、token、latency、statusを確認し、異常時はゲートをOFFに戻す。model IDはDB履歴に残るため過去実行は変更しない。
 
 ## Production gate
 

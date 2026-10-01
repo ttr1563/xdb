@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
 import {
+  type AiRun,
   designPlanSchema,
   illustrationSpecSchema,
   type DesignPlan,
@@ -108,10 +109,18 @@ const planTool = {
   },
 } as const;
 
-interface AnthropicResponse {
-  content?: Array<{ type?: string; name?: string; input?: unknown }>;
-  usage?: { input_tokens?: number; output_tokens?: number };
-}
+const anthropicResponseSchema = z.object({
+  content: z.array(z.object({
+    type: z.string().optional(),
+    name: z.string().optional(),
+    input: z.unknown().optional(),
+  }).passthrough()).optional(),
+  usage: z.object({
+    input_tokens: z.number().int().nonnegative().optional(),
+    output_tokens: z.number().int().nonnegative().optional(),
+  }).optional(),
+}).passthrough();
+type AnthropicResponse = z.infer<typeof anthropicResponseSchema>;
 
 export interface AnthropicPlanningConfig {
   apiKey: string;
@@ -119,12 +128,85 @@ export interface AnthropicPlanningConfig {
   baseUrl: string;
   timeoutMs: number;
   maxOutputTokens: number;
+  allowedBaseUrls: string[];
+  maxRetries: number;
+  retryBaseDelayMs: number;
 }
 
 export interface AnthropicPlanningResult {
   plan: DesignPlan;
   inputTokens: number | null;
   outputTokens: number | null;
+  attemptCount: number;
+}
+
+type AnthropicErrorCode = NonNullable<AiRun['errorCode']>;
+
+export class AnthropicProviderError extends Error {
+  public constructor(
+    public readonly code: AnthropicErrorCode,
+    message: string,
+    public readonly retryable: boolean,
+    public readonly attemptCount: number,
+    public readonly inputTokens: number | null = null,
+    public readonly outputTokens: number | null = null,
+  ) {
+    super(message);
+    this.name = 'anthropic_provider_error';
+  }
+}
+
+function normalizedBaseUrl(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new AnthropicProviderError('base_url_not_allowed', 'Anthropic base URL is invalid.', false, 0);
+  }
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
+    throw new AnthropicProviderError(
+      'base_url_not_allowed',
+      'Anthropic base URL must be an HTTPS URL without credentials, query, or fragment.',
+      false,
+      0,
+    );
+  }
+  return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+}
+
+function allowedEndpoint(baseUrl: string, allowedBaseUrls: string[]): string {
+  const normalized = normalizedBaseUrl(baseUrl);
+  const allowed = allowedBaseUrls.map(normalizedBaseUrl);
+  if (!allowed.includes(normalized)) {
+    throw new AnthropicProviderError(
+      'base_url_not_allowed',
+      'Anthropic base URL is not in design.config.json allowedBaseUrls.',
+      false,
+      0,
+    );
+  }
+  return `${normalized}/v1/messages`;
+}
+
+export function isAnthropicBaseUrlAllowed(baseUrl: string, allowedBaseUrls: string[]): boolean {
+  try {
+    allowedEndpoint(baseUrl, allowedBaseUrls);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function providerError(error: unknown, attemptCount: number): AnthropicProviderError {
+  if (error instanceof AnthropicProviderError) return error;
+  if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+    return new AnthropicProviderError('timeout', 'Anthropic request timed out.', false, attemptCount);
+  }
+  return new AnthropicProviderError('network', 'Anthropic request failed before a response was received.', false, attemptCount);
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 export async function createAnthropicDesignPlan(
@@ -133,41 +215,93 @@ export async function createAnthropicDesignPlan(
   styleProfile: StyleProfile,
   config: AnthropicPlanningConfig,
   fetchImplementation: typeof fetch = fetch,
+  sleepImplementation: (milliseconds: number) => Promise<void> = delay,
 ): Promise<AnthropicPlanningResult> {
-  const response = await fetchImplementation(`${config.baseUrl.replace(/\/$/, '')}/v1/messages`, {
-    method: 'POST',
-    headers: {
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-      'x-api-key': config.apiKey,
-    },
-    body: JSON.stringify({
-      model: config.model,
-      max_tokens: config.maxOutputTokens,
-      system: 'You are XDB planning an evidence-backed web design. Use only the supplied context. Call submit_design_plan exactly once. Do not invent research evidence, IDs, permissions, or implementation status.',
-      messages: [
-        {
-          role: 'user',
-          content: `<design_request>${JSON.stringify(request)}</design_request>\n<knowledge>${JSON.stringify(knowledge)}</knowledge>\n<style_profile>${JSON.stringify(styleProfile)}</style_profile>\nCreate a coherent, responsive, accessible plan. Preserve the requested concepts and avoid list.`,
+  const endpoint = allowedEndpoint(config.baseUrl, config.allowedBaseUrls);
+  let attemptCount = 0;
+  let payload: AnthropicResponse | null = null;
+  while (attemptCount <= config.maxRetries) {
+    attemptCount += 1;
+    try {
+      const response = await fetchImplementation(endpoint, {
+        method: 'POST',
+        headers: {
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+          'x-api-key': config.apiKey,
         },
-      ],
-      tools: [planTool],
-      tool_choice: { type: 'tool', name: planTool.name },
-    }),
-    signal: AbortSignal.timeout(config.timeoutMs),
-  });
+        body: JSON.stringify({
+          model: config.model,
+          max_tokens: config.maxOutputTokens,
+          system: 'You are XDB planning an evidence-backed web design. Use only the supplied context. Call submit_design_plan exactly once. Do not invent research evidence, IDs, permissions, or implementation status.',
+          messages: [
+            {
+              role: 'user',
+              content: `<design_request>${JSON.stringify(request)}</design_request>\n<knowledge>${JSON.stringify(knowledge)}</knowledge>\n<style_profile>${JSON.stringify(styleProfile)}</style_profile>\nCreate a coherent, responsive, accessible plan. Preserve the requested concepts and avoid list.`,
+            },
+          ],
+          tools: [planTool],
+          tool_choice: { type: 'tool', name: planTool.name },
+        }),
+        signal: AbortSignal.timeout(config.timeoutMs),
+      });
 
-  if (!response.ok) {
-    throw new Error(`Anthropic Messages API returned HTTP ${response.status}.`);
+      if (!response.ok) {
+        const retryable = response.status === 429 || response.status >= 500;
+        const code = response.status === 429 ? 'rate_limited' : response.status >= 500 ? 'upstream' : 'invalid_response';
+        throw new AnthropicProviderError(code, `Anthropic Messages API returned HTTP ${response.status}.`, retryable, attemptCount);
+      }
+      let rawPayload: unknown;
+      try {
+        rawPayload = await response.json();
+      } catch {
+        throw new AnthropicProviderError('invalid_response', 'Anthropic response was not valid JSON.', false, attemptCount);
+      }
+      const parsedPayload = anthropicResponseSchema.safeParse(rawPayload);
+      if (!parsedPayload.success) {
+        throw new AnthropicProviderError(
+          'invalid_response',
+          'Anthropic response body failed validation.',
+          false,
+          attemptCount,
+        );
+      }
+      payload = parsedPayload.data;
+      break;
+    } catch (error) {
+      const categorized = providerError(error, attemptCount);
+      if (!categorized.retryable || attemptCount > config.maxRetries) throw categorized;
+      await sleepImplementation(config.retryBaseDelayMs * 2 ** (attemptCount - 1));
+    }
   }
 
-  const payload = (await response.json()) as AnthropicResponse;
-  const toolUse = payload.content?.find(
-    (block) => block.type === 'tool_use' && block.name === planTool.name,
-  );
-  if (!toolUse) throw new Error('Anthropic response did not contain submit_design_plan tool use.');
+  if (!payload) {
+    throw new AnthropicProviderError('network', 'Anthropic request ended without a response.', false, attemptCount);
+  }
+  const toolUse = payload.content?.find((block) => block.type === 'tool_use' && block.name === planTool.name);
+  if (!toolUse) {
+    throw new AnthropicProviderError(
+      'invalid_response',
+      'Anthropic response did not contain submit_design_plan tool use.',
+      false,
+      attemptCount,
+      payload.usage?.input_tokens ?? null,
+      payload.usage?.output_tokens ?? null,
+    );
+  }
 
-  const draft = planDraftSchema.parse(toolUse.input);
+  const parsedDraft = planDraftSchema.safeParse(toolUse.input);
+  if (!parsedDraft.success) {
+    throw new AnthropicProviderError(
+      'invalid_response',
+      'Anthropic planning tool result failed validation.',
+      false,
+      attemptCount,
+      payload.usage?.input_tokens ?? null,
+      payload.usage?.output_tokens ?? null,
+    );
+  }
+  const draft = parsedDraft.data;
   const plan = designPlanSchema.parse({
     ...draft,
     id: randomUUID(),
@@ -185,5 +319,6 @@ export async function createAnthropicDesignPlan(
     plan,
     inputTokens: payload.usage?.input_tokens ?? null,
     outputTokens: payload.usage?.output_tokens ?? null,
+    attemptCount,
   };
 }

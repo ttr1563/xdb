@@ -93,7 +93,16 @@ XDB_ANTHROPIC_BASE_URL=https://api.anthropic.com
 
 model IDはAnthropic側の提供状況・retirement・account権限に依存するため、XDBでは固定していません。UIのPlanning AIでClaudeを選ぶとMessages APIを使用します。Claudeのtool resultはZodで検証され、ID、knowledge lineage、Style Profile IDはXDB側で付与されます。
 
-Claude未接続、timeout、不正なresponseの場合は`design.config.json`の`fallbackToLocal`に従います。fallback時はPlanに`provider: local`と`fallbackUsed: true`を記録し、Claude生成とは表示しません。実行監査は`GET /api/ai-runs`で確認できます。
+credentialを設定しただけでは外部送信されません。`design.config.json`で次をすべて確認してから、`allowExternalRequests`を`true`にします。
+
+- `allowedBaseUrls`にcredential送信先を完全一致で指定する（既定は`https://api.anthropic.com`のみ）。
+- `monthlyTokenBudget`を1回の`maxOutputTokens`以上の正の値にする。`0`は停止を意味する。
+- 利用modelの単価から月次費用上限を別途算出する。XDBの上限はtoken数であり、課金額そのものではない。
+- `maxRetries`は0〜2。retryは429と5xxだけに限定される。
+
+`monthlyTokenBudget`はXDBが記録したtokenと次requestのoutput上限によるlocal preflightです。provider側の厳密な課金capではないため、Anthropic account側のbudget・使用量アラートも併用してください。
+
+Claude未接続、外部実行OFF、予算不足、timeout、rate limit、upstream error、不正responseは個別の`errorCode`で記録され、`fallbackToLocal`に従います。fallback時はPlanに`provider: local`と`fallbackUsed: true`を記録し、Claude生成とは表示しません。UIと`GET /api/ai-runs`でmodel、token、latency、試行回数、失敗理由を確認できます。
 
 Claude Codeからrepositoryを開く場合は、rootの[CLAUDE.md](CLAUDE.md)が共通XDB Skillを読み込みます。Claude Codeからも同じAPI・Design Plan・評価契約を使用します。
 
@@ -112,7 +121,7 @@ npm run build
 
 - `output.defaultMode`: `figma | html | both`
 - `ai.defaultProvider`: `local | anthropic`
-- Claudeの有効化、timeout、最大output token、local fallback
+- Claudeの外部実行ゲート、許可URL、timeout、retry、request／月次token上限、local fallback
 - Adapterの有効／無効
 - illustration候補数とhuman approval
 - evaluationとprovenanceの記録方針
@@ -123,7 +132,7 @@ npm run build
 
 - `GET /api/export`: 全domain dataのversion付きJSON
 - `GET /api/export/evaluations.jsonl`: 評価履歴のJSONL
-- `GET /api/ai-runs`: AI provider、model、token使用量、latency、fallback、errorの監査履歴
+- `GET /api/ai-runs`: AI provider、model、token使用量、latency、試行回数、fallback、error codeの監査履歴
 
 外部referenceは公開されているだけでは学習利用可能とみなしません。source、license、capture time、training eligibilityを個別に記録します。
 

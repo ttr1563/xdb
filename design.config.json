@@ -11,9 +11,14 @@
       "local": { "enabled": true },
       "anthropic": {
         "enabled": true,
+        "allowExternalRequests": false,
         "fallbackToLocal": true,
+        "allowedBaseUrls": ["https://api.anthropic.com"],
         "timeoutMs": 30000,
-        "maxOutputTokens": 4096
+        "maxOutputTokens": 4096,
+        "maxRetries": 1,
+        "retryBaseDelayMs": 500,
+        "monthlyTokenBudget": 0
       }
     }
   },

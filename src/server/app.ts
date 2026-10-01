@@ -17,6 +17,7 @@ import {
   type DashboardSummary,
 } from '../shared/contracts.js';
 
+import { isAnthropicBaseUrlAllowed } from './ai/anthropic.js';
 import { generateDesignPlan } from './ai/planning.js';
 import { ArtifactStore } from './artifacts/store.js';
 import type { RuntimeConfig } from './config.js';
@@ -40,10 +41,37 @@ function seedRepository(repository: Repository): void {
   }
 }
 
+function currentMonthStart(): string {
+  const date = new Date();
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1)).toISOString();
+}
+
 export function buildApp({ repository, config }: AppDependencies): FastifyInstance {
   seedRepository(repository);
   const app = Fastify({ logger: false });
   const artifactStore = new ArtifactStore(config.artifactsPath);
+  const anthropicConfigured = Boolean(config.anthropic.apiKey && config.anthropic.model);
+
+  function anthropicCapabilities() {
+    const provider = config.design.ai.providers.anthropic;
+    const tokensUsed = repository.sumAnthropicTokensSince(currentMonthStart());
+    let blockReason: string | null = null;
+    if (!provider.allowExternalRequests) blockReason = 'external_requests_disabled';
+    else if (!anthropicConfigured) blockReason = 'credentials_or_model_missing';
+    else if (!isAnthropicBaseUrlAllowed(config.anthropic.baseUrl, provider.allowedBaseUrls)) {
+      blockReason = 'base_url_not_allowed';
+    }
+    else if (provider.monthlyTokenBudget === 0 || tokensUsed + provider.maxOutputTokens > provider.monthlyTokenBudget) {
+      blockReason = 'monthly_token_budget_insufficient';
+    }
+    return {
+      anthropicConnected: anthropicConfigured,
+      anthropicLiveEnabled: provider.enabled && blockReason === null,
+      anthropicBlockReason: blockReason,
+      anthropicMonthlyTokensUsed: tokensUsed,
+      anthropicMonthlyTokenBudget: provider.monthlyTokenBudget,
+    };
+  }
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ZodError) {
@@ -59,14 +87,14 @@ export function buildApp({ repository, config }: AppDependencies): FastifyInstan
   app.get('/api/health', async () => ({
     status: 'ok',
     figmaConnected: Boolean(config.figmaMcpServer),
-    anthropicConnected: Boolean(config.anthropic.apiKey && config.anthropic.model),
+    ...anthropicCapabilities(),
   }));
   app.get('/api/config', async () => ({
     design: config.design,
     capabilities: {
       figmaConnected: Boolean(config.figmaMcpServer),
       imageProviderConnected: Boolean(config.imageProvider),
-      anthropicConnected: Boolean(config.anthropic.apiKey && config.anthropic.model),
+      ...anthropicCapabilities(),
     },
   }));
 

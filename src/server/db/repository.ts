@@ -186,8 +186,8 @@ export class Repository {
       .prepare(`
         INSERT INTO ai_runs (
           id, request_id, purpose, provider, model, status, fallback_used,
-          input_tokens, output_tokens, latency_ms, error, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          input_tokens, output_tokens, latency_ms, error_code, attempt_count, error, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         run.id,
@@ -200,6 +200,8 @@ export class Repository {
         run.inputTokens,
         run.outputTokens,
         run.latencyMs,
+        run.errorCode,
+        run.attemptCount,
         run.error,
         run.createdAt,
       );
@@ -218,9 +220,22 @@ export class Repository {
       inputTokens: row.input_tokens === null ? null : Number(row.input_tokens),
       outputTokens: row.output_tokens === null ? null : Number(row.output_tokens),
       latencyMs: Number(row.latency_ms),
+      attemptCount: Number(row.attempt_count),
+      errorCode: row.error_code === null ? null : row.error_code as AiRun['errorCode'],
       error: row.error === null ? null : String(row.error),
       createdAt: String(row.created_at),
     }));
+  }
+
+  public sumAnthropicTokensSince(createdAt: string): number {
+    const row = this.database
+      .prepare(`
+        SELECT COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) AS tokens
+        FROM ai_runs
+        WHERE provider = 'anthropic' AND created_at >= ?
+      `)
+      .get(createdAt) as { tokens: number } | undefined;
+    return Number(row?.tokens ?? 0);
   }
 
   public listPlans(): DesignPlan[] {
