@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -178,6 +179,41 @@ describe('XDB MCP facade', () => {
       });
       expect(result.isError).toBe(true);
       expect(repository.listRequests()).toHaveLength(0);
+    } finally {
+      await client.close();
+      await server.close();
+      database.close();
+    }
+  });
+
+  it('does not execute a write whose prior outcome is unknown', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'xdb-mcp-'));
+    temporaryDirectories.push(directory);
+    const config = runtimeConfig(directory);
+    const database = openDatabase(config.databasePath);
+    const repository = new Repository(database);
+    seedXdbRepository(repository);
+    const service = new XdbService({ repository, config, artifactStore: new ArtifactStore(config.artifactsPath) });
+    const server = createXdbMcpServer({ service, repository });
+    const client = new Client({ name: 'xdb-test-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const requestId = randomUUID();
+    const payload = { requestId, provider: 'local' };
+    const key = 'plan:unknown-outcome:1';
+    const requestHash = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+    repository.claimMcpOperation(key, 'xdb_create_plan', requestHash);
+    database.prepare('UPDATE mcp_operations SET lease_expires_at = ? WHERE idempotency_key = ?')
+      .run('2000-01-01T00:00:00.000Z', key);
+
+    try {
+      const result = await client.callTool({
+        name: 'xdb_create_plan',
+        arguments: { ...payload, idempotencyKey: key },
+      });
+      expect(result.isError).toBe(true);
+      expect(repository.listPlans()).toHaveLength(0);
     } finally {
       await client.close();
       await server.close();

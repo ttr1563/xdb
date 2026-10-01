@@ -158,6 +158,10 @@ const migrationFour = `
   CREATE INDEX IF NOT EXISTS idx_mcp_operations_updated ON mcp_operations(updated_at);
 `;
 
+const migrationFive = `
+  ALTER TABLE mcp_operations ADD COLUMN owner_token TEXT;
+`;
+
 export function openDatabase(databasePath: string): Database.Database {
   mkdirSync(path.dirname(databasePath), { recursive: true });
   const database = new Database(databasePath);
@@ -223,6 +227,20 @@ export function openDatabase(databasePath: string): Database.Database {
       database
         .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
         .run(4, new Date().toISOString());
+      database.exec('COMMIT;');
+    } catch (error) {
+      database.exec('ROLLBACK;');
+      throw error;
+    }
+  }
+
+  if (currentVersion < 5) {
+    database.exec('BEGIN IMMEDIATE;');
+    try {
+      database.exec(migrationFive);
+      database
+        .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
+        .run(5, new Date().toISOString());
       database.exec('COMMIT;');
     } catch (error) {
       database.exec('ROLLBACK;');

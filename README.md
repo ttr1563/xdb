@@ -135,7 +135,7 @@ codex mcp list
 - write: `xdb_create_request`、`xdb_create_plan`、`xdb_create_artifacts`、`xdb_record_evaluation`、`xdb_compare_artifacts`
 - resource: `xdb://artifact/{artifactId}`
 
-write toolは8〜128文字の`idempotencyKey`を必須とします。同じkeyとpayloadの再実行は保存済み結果を返し、同じkeyの別payload利用は拒否します。`xdb_create_artifacts`はHTMLとFigma operation planをlocal生成しますが、Figmaへの外部writeは実行しません。
+write toolは8〜128文字の`idempotencyKey`を必須とします。同じkeyとpayloadは完了済みの場合だけ保存結果を返し、別payloadへの再利用は拒否します。実行中、失敗済み、またはprocess停止等で結果不明になったkeyからdomain処理を自動再実行しません。保存状態を照合し、安全を確認した場合だけ新しいkeyで明示的に実行してください。`xdb_create_artifacts`はHTMLとFigma operation planをlocal生成しますが、Figmaへの外部writeは実行しません。
 
 CodexのMCP登録形式は[OpenAI公式MCP手順](https://developers.openai.com/learn/docs-mcp)、Claude Codeのproject-scope承認は[Claude Code公式MCP手順](https://code.claude.com/docs/en/mcp)を参照してください。
 

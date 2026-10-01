@@ -16,6 +16,7 @@ import { ApplicationError, type XdbService } from '../application/xdb-service.js
 import type { Repository } from '../db/repository.js';
 
 const idempotencyKeySchema = z.string().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/);
+const leaseRenewalIntervalMs = 60_000;
 const requestIdSchema = z.object({ requestId: z.string().uuid() });
 const runIdSchema = z.object({ runId: z.string().uuid() });
 const writeAnnotations = {
@@ -77,14 +78,40 @@ async function executeIdempotent(
   if (claim.state === 'in_progress') {
     throw new ApplicationError('operation_in_progress', 409, 'The idempotent operation is already in progress.');
   }
+  if (claim.state === 'indeterminate') {
+    throw new ApplicationError(
+      'operation_outcome_unknown',
+      409,
+      'The prior operation did not finish recording its outcome. Reconcile saved state before using a new key.',
+    );
+  }
+  if (claim.state === 'failed') {
+    throw new ApplicationError(
+      'operation_previously_failed',
+      409,
+      'The prior operation failed and will not be retried with the same key. Reconcile saved state before using a new key.',
+    );
+  }
   if (claim.state === 'replay') return { result: claim.result, replayed: true };
+  let leaseOwned = true;
+  const renewal = setInterval(() => {
+    try {
+      leaseOwned = repository.renewMcpOperation(idempotencyKey, claim.ownerToken);
+    } catch {
+      leaseOwned = false;
+    }
+  }, leaseRenewalIntervalMs);
+  renewal.unref();
   try {
     const result = await execute();
-    repository.completeMcpOperation(idempotencyKey, result);
+    if (!leaseOwned) throw new Error('MCP operation lease renewal failed.');
+    repository.completeMcpOperation(idempotencyKey, claim.ownerToken, result);
     return { result, replayed: false };
   } catch (error) {
-    repository.failMcpOperation(idempotencyKey, errorMessage(error));
+    if (leaseOwned) repository.failMcpOperation(idempotencyKey, claim.ownerToken, errorMessage(error));
     throw error;
+  } finally {
+    clearInterval(renewal);
   }
 }
 

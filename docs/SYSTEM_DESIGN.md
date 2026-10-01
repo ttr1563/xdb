@@ -261,7 +261,9 @@ MCPは新しい正本やbusiness logicを持たず、HTTPと同じ`XdbService`�
 
 MCP responseは巨大なHTMLやbinaryを直接返さず、summary、ID、`xdb://artifact/{artifactId}` resource URIを返します。write toolはreadと分離し、外部Figma writeを暗黙実行しません。
 
-write toolは`idempotencyKey`を必須とし、`mcp_operations`にtool、request hash、lease、status、返却値を保持します。同じkeyとpayloadは完了済み結果をreplayし、別payloadはconflictとして拒否します。失敗は監査し、再実行でleaseを再取得できます。
+write toolは`idempotencyKey`を必須とし、`mcp_operations`にtool、request hash、owner token、lease、status、返却値を保持します。同じkeyとpayloadは完了済み結果だけをreplayし、別payloadはconflictとして拒否します。処理中はleaseを更新し、owner tokenが一致する実行だけが完了・失敗へ遷移できます。
+
+domain writeとoperation完了記録の間でprocessが停止すると結果は不明になり得るため、期限切れやfailedのkeyを自動再取得しません。これにより同じkeyから重複writeを起こさず、保存状態を照合して副作用がないと確認できた場合だけ新しいkeyによる明示実行へ進みます。外部providerを含むexactly-onceを保証済みとは表示しません。
 
 ## 10. Output adapter design
 
