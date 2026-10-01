@@ -92,6 +92,18 @@ ${variables}
   .cta h2 { max-width: 680px; }
   .cta p { margin: 0; color: rgb(255 255 255 / .68); }
   .footer { padding: 32px 0 52px; display: flex; justify-content: space-between; color: var(--color-text-muted); font-size: 13px; }
+  .strategy-conservative .shell { width: min(1040px, calc(100% - 40px)); }
+  .strategy-conservative h1 { font-size: clamp(44px, 5.4vw, 70px); }
+  .strategy-conservative .button, .strategy-conservative .card { box-shadow: none; }
+  .strategy-conservative .card { min-height: 250px; border-radius: 12px; }
+  .strategy-expressive .hero { grid-template-columns: .88fr 1.12fr; }
+  .strategy-expressive h1 { font-size: clamp(52px, 6.8vw, 90px); }
+  .strategy-expressive .hero-art { transform: rotate(1.5deg); }
+  .strategy-expressive .card:nth-child(2) { transform: translateY(28px); }
+  .strategy-conversion-led .hero { grid-template-columns: 1.2fr .8fr; }
+  .strategy-conversion-led .button { border-radius: 5px; }
+  .strategy-conversion-led .trust { padding-inline: 24px; background: var(--color-surface-raised); border: 0; }
+  .strategy-conversion-led .cta { border-radius: var(--radius-control); }
   @media (max-width: 800px) {
     .nav-links a:not(.button) { display: none; }
     .hero { grid-template-columns: 1fr; padding: 56px 0 72px; }
@@ -101,11 +113,13 @@ ${variables}
     .card { min-height: 220px; }
     .process { grid-template-columns: 1fr; gap: 32px; }
     .cta { align-items: start; flex-direction: column; }
+    .strategy-expressive .hero, .strategy-conversion-led .hero { grid-template-columns: 1fr; }
+    .strategy-expressive .hero-art, .strategy-expressive .card:nth-child(2) { transform: none; }
   }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; } }
   </style>
 </head>
-<body>
+<body class="strategy-${plan.variantStrategy}">
   <header class="shell nav" aria-label="メインナビゲーション">
     <div class="brand">${escapeHtml(plan.sections[0]?.headline ?? 'XDB')}</div>
     <nav class="nav-links"><a href="#features">価値</a><a href="#workflow">使い方</a><a class="button" href="#start">始める</a></nav>

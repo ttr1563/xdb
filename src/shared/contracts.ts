@@ -6,6 +6,9 @@ export type OutputMode = z.infer<typeof outputModeSchema>;
 export const aiProviderSchema = z.enum(['local', 'anthropic']);
 export type AiProvider = z.infer<typeof aiProviderSchema>;
 
+export const variantStrategySchema = z.enum(['baseline', 'conservative', 'expressive', 'conversion-led']);
+export type VariantStrategy = z.infer<typeof variantStrategySchema>;
+
 export const designConfigSchema = z.object({
   version: z.literal(1),
   output: z.object({
@@ -181,6 +184,10 @@ export type DesignSection = z.infer<typeof designSectionSchema>;
 export const designPlanSchema = z.object({
   id: z.string().uuid(),
   requestId: z.string().uuid(),
+  familyId: z.string().uuid(),
+  variantStrategy: variantStrategySchema,
+  candidateIndex: z.number().int().nonnegative(),
+  fingerprint: z.string().length(64),
   version: z.literal(1),
   rationale: z.string().min(20),
   designDirection: z.object({
@@ -203,6 +210,24 @@ export const designPlanSchema = z.object({
   createdAt: z.string().datetime(),
 });
 export type DesignPlan = z.infer<typeof designPlanSchema>;
+
+export const planFamilySchema = z.object({
+  id: z.string().uuid(),
+  requestId: z.string().uuid(),
+  provider: aiProviderSchema,
+  strategies: z.array(variantStrategySchema).min(1).max(3),
+  createdAt: z.string().datetime(),
+});
+export type PlanFamily = z.infer<typeof planFamilySchema>;
+
+export const planFamilyInputSchema = z.object({
+  requestId: z.string().uuid(),
+  provider: z.literal('local').default('local'),
+  strategies: z.array(variantStrategySchema.exclude(['baseline'])).min(2).max(3)
+    .refine((items) => new Set(items).size === items.length, 'Strategies must be unique.')
+    .default(['conservative', 'expressive', 'conversion-led']),
+});
+export type PlanFamilyInput = z.infer<typeof planFamilyInputSchema>;
 
 export const aiRunSchema = z.object({
   id: z.string().uuid(),
@@ -297,6 +322,13 @@ export const comparisonInputSchema = z.object({
   artifactBId: z.string().uuid(),
   preferredArtifactId: z.string().uuid(),
   rationale: z.string().min(4).max(2_000),
+}).superRefine((input, context) => {
+  if (input.artifactAId === input.artifactBId) {
+    context.addIssue({ code: 'custom', path: ['artifactBId'], message: 'Comparison artifacts must be distinct.' });
+  }
+  if (input.preferredArtifactId !== input.artifactAId && input.preferredArtifactId !== input.artifactBId) {
+    context.addIssue({ code: 'custom', path: ['preferredArtifactId'], message: 'Preferred artifact must be A or B.' });
+  }
 });
 export type ComparisonInput = z.infer<typeof comparisonInputSchema>;
 

@@ -11,6 +11,7 @@ import {
   type KnowledgeItem,
   type StyleProfile,
 } from '../../shared/contracts.js';
+import { designPlanFingerprint } from '../domain/planner.js';
 
 const planDraftSchema = z.object({
   rationale: designPlanSchema.shape.rationale,
@@ -302,10 +303,14 @@ export async function createAnthropicDesignPlan(
     );
   }
   const draft = parsedDraft.data;
-  const plan = designPlanSchema.parse({
+  const id = randomUUID();
+  const planWithoutFingerprint: Omit<DesignPlan, 'fingerprint'> = {
     ...draft,
-    id: randomUUID(),
+    id,
     requestId: request.id,
+    familyId: id,
+    variantStrategy: 'baseline',
+    candidateIndex: 0,
     version: 1,
     illustration: draft.illustration
       ? { ...draft.illustration, styleProfileId: styleProfile.id }
@@ -313,6 +318,10 @@ export async function createAnthropicDesignPlan(
     knowledgeIds: knowledge.map((item) => item.id),
     generation: { provider: 'anthropic', model: config.model, fallbackUsed: false },
     createdAt: new Date().toISOString(),
+  };
+  const plan = designPlanSchema.parse({
+    ...planWithoutFingerprint,
+    fingerprint: designPlanFingerprint(planWithoutFingerprint),
   });
 
   return {

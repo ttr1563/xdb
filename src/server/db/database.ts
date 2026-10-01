@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 
@@ -162,6 +163,35 @@ const migrationFive = `
   ALTER TABLE mcp_operations ADD COLUMN owner_token TEXT;
 `;
 
+const migrationSix = `
+  CREATE TABLE IF NOT EXISTS plan_families (
+    id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL REFERENCES design_requests(id),
+    provider TEXT NOT NULL CHECK (provider IN ('local', 'anthropic')),
+    strategies_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  ALTER TABLE design_plans ADD COLUMN family_id TEXT;
+  ALTER TABLE design_plans ADD COLUMN variant_strategy TEXT;
+  ALTER TABLE design_plans ADD COLUMN candidate_index INTEGER;
+  ALTER TABLE design_plans ADD COLUMN fingerprint TEXT;
+
+  UPDATE design_plans
+  SET family_id = id,
+      variant_strategy = 'baseline',
+      candidate_index = 0,
+      fingerprint = NULL
+  WHERE family_id IS NULL;
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_design_plans_family_candidate
+    ON design_plans(family_id, candidate_index);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_design_plans_family_fingerprint
+    ON design_plans(family_id, fingerprint);
+  CREATE INDEX IF NOT EXISTS idx_design_plans_fingerprint ON design_plans(fingerprint);
+  CREATE INDEX IF NOT EXISTS idx_plan_families_request ON plan_families(request_id);
+`;
+
 export function openDatabase(databasePath: string): Database.Database {
   mkdirSync(path.dirname(databasePath), { recursive: true });
   const database = new Database(databasePath);
@@ -241,6 +271,41 @@ export function openDatabase(databasePath: string): Database.Database {
       database
         .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
         .run(5, new Date().toISOString());
+      database.exec('COMMIT;');
+    } catch (error) {
+      database.exec('ROLLBACK;');
+      throw error;
+    }
+  }
+
+  if (currentVersion < 6) {
+    database.exec('BEGIN IMMEDIATE;');
+    try {
+      database.exec(migrationSix);
+      const legacyPlans = database.prepare(`
+        SELECT id, request_id, plan_json, created_at FROM design_plans WHERE fingerprint IS NULL
+      `).all() as Array<{ id: string; request_id: string; plan_json: string; created_at: string }>;
+      const updatePlan = database.prepare('UPDATE design_plans SET fingerprint = ? WHERE id = ?');
+      const insertFamily = database.prepare(`
+        INSERT OR IGNORE INTO plan_families (id, request_id, provider, strategies_json, created_at)
+        VALUES (?, ?, ?, '["baseline"]', ?)
+      `);
+      for (const row of legacyPlans) {
+        const plan = JSON.parse(row.plan_json) as Record<string, unknown>;
+        const fingerprint = createHash('sha256').update(JSON.stringify({
+          designDirection: plan.designDirection,
+          sections: plan.sections,
+          tokens: plan.tokens,
+          illustration: plan.illustration,
+        })).digest('hex');
+        const generation = plan.generation as { provider?: unknown } | undefined;
+        const provider = generation?.provider === 'anthropic' ? 'anthropic' : 'local';
+        updatePlan.run(fingerprint, row.id);
+        insertFamily.run(row.id, row.request_id, provider, row.created_at);
+      }
+      database
+        .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
+        .run(6, new Date().toISOString());
       database.exec('COMMIT;');
     } catch (error) {
       database.exec('ROLLBACK;');

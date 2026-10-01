@@ -14,6 +14,7 @@ import type {
   EvaluationInput,
   KnowledgeInput,
   KnowledgeItem,
+  PlanFamily,
   StyleProfile,
   StyleProfileInput,
 } from '../../shared/contracts.js';
@@ -105,6 +106,17 @@ function toArtifact(row: SqlRow): Artifact {
   };
 }
 
+function toPlan(row: SqlRow): DesignPlan {
+  const plan = parseJson<DesignPlan>(row.plan_json);
+  return {
+    ...plan,
+    familyId: String(row.family_id),
+    variantStrategy: row.variant_strategy as DesignPlan['variantStrategy'],
+    candidateIndex: Number(row.candidate_index),
+    fingerprint: String(row.fingerprint),
+  };
+}
+
 export class Repository {
   public constructor(private readonly database: Database.Database) {}
 
@@ -184,10 +196,46 @@ export class Repository {
 
   public savePlan(plan: DesignPlan): DesignPlan {
     this.database
-      .prepare('INSERT INTO design_plans (id, request_id, version, plan_json, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(plan.id, plan.requestId, plan.version, JSON.stringify(plan), plan.createdAt);
+      .prepare(`
+        INSERT INTO design_plans (
+          id, request_id, version, plan_json, created_at,
+          family_id, variant_strategy, candidate_index, fingerprint
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        plan.id,
+        plan.requestId,
+        plan.version,
+        JSON.stringify(plan),
+        plan.createdAt,
+        plan.familyId,
+        plan.variantStrategy,
+        plan.candidateIndex,
+        plan.fingerprint,
+      );
     this.setRequestStatus(plan.requestId, 'planned');
     return plan;
+  }
+
+  public savePlanFamily(family: PlanFamily, plans: DesignPlan[]): { family: PlanFamily; plans: DesignPlan[] } {
+    return this.database.transaction(() => {
+      this.database.prepare(`
+        INSERT INTO plan_families (id, request_id, provider, strategies_json, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(family.id, family.requestId, family.provider, JSON.stringify(family.strategies), family.createdAt);
+      for (const plan of plans) this.savePlan(plan);
+      return { family, plans };
+    })();
+  }
+
+  public listPlanFamilies(): PlanFamily[] {
+    return asRows(this.database.prepare('SELECT * FROM plan_families ORDER BY created_at DESC').all()).map((row) => ({
+      id: String(row.id),
+      requestId: String(row.request_id),
+      provider: row.provider as PlanFamily['provider'],
+      strategies: parseJson<PlanFamily['strategies']>(row.strategies_json),
+      createdAt: String(row.created_at),
+    }));
   }
 
   public createAiRun(input: Omit<AiRun, 'id' | 'createdAt'>): AiRun {
@@ -249,14 +297,12 @@ export class Repository {
   }
 
   public listPlans(): DesignPlan[] {
-    return asRows(this.database.prepare('SELECT plan_json FROM design_plans ORDER BY created_at DESC').all()).map((row) =>
-      parseJson<DesignPlan>(row.plan_json),
-    );
+    return asRows(this.database.prepare('SELECT * FROM design_plans ORDER BY created_at DESC').all()).map(toPlan);
   }
 
   public getPlan(id: string): DesignPlan | null {
-    const row = asRow(this.database.prepare('SELECT plan_json FROM design_plans WHERE id = ?').get(id));
-    return row ? parseJson<DesignPlan>(row.plan_json) : null;
+    const row = asRow(this.database.prepare('SELECT * FROM design_plans WHERE id = ?').get(id));
+    return row ? toPlan(row) : null;
   }
 
   public listStyleProfiles(): StyleProfile[] {
@@ -444,22 +490,25 @@ export class Repository {
 
   public createComparison(input: ComparisonInput): { id: string; createdAt: string } & ComparisonInput {
     const comparison = { ...input, id: randomUUID(), createdAt: now() };
-    this.database
-      .prepare(`
-        INSERT INTO pairwise_comparisons (
-          id, request_id, artifact_a_id, artifact_b_id, preferred_artifact_id, rationale, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-      `)
-      .run(
-        comparison.id,
-        comparison.requestId,
-        comparison.artifactAId,
-        comparison.artifactBId,
-        comparison.preferredArtifactId,
-        comparison.rationale,
-        comparison.createdAt,
-      );
-    return comparison;
+    return this.database.transaction(() => {
+      this.database
+        .prepare(`
+          INSERT INTO pairwise_comparisons (
+            id, request_id, artifact_a_id, artifact_b_id, preferred_artifact_id, rationale, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          comparison.id,
+          comparison.requestId,
+          comparison.artifactAId,
+          comparison.artifactBId,
+          comparison.preferredArtifactId,
+          comparison.rationale,
+          comparison.createdAt,
+        );
+      this.setRequestStatus(input.requestId, 'reviewed');
+      return comparison;
+    })();
   }
 
   public count(table: 'design_requests' | 'knowledge_items' | 'design_plans' | 'creation_runs' | 'evaluations'): number {

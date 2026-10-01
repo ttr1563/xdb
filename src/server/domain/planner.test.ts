@@ -60,4 +60,18 @@ describe('createDesignPlan', () => {
     expect(plan.illustration).toMatchObject({ styleProfileId: style.id, purpose: 'hero' });
     expect(plan.illustration?.avoid).toEqual(expect.arrayContaining(['過度な3D', 'glossy 3d']));
   });
+
+  it('produces traceable and structurally distinct strategy candidates', () => {
+    const request = fixtureRequest();
+    const familyId = randomUUID();
+    const strategies = ['conservative', 'expressive', 'conversion-led'] as const;
+    const plans = strategies.map((strategy, candidateIndex) =>
+      createDesignPlan(request, [knowledge], style, { familyId, strategy, candidateIndex }),
+    );
+
+    expect(plans.map((plan) => plan.variantStrategy)).toEqual(strategies);
+    expect(plans.every((plan) => plan.familyId === familyId)).toBe(true);
+    expect(new Set(plans.map((plan) => plan.fingerprint))).toHaveProperty('size', 3);
+    expect(new Set(plans.map((plan) => plan.designDirection.contrast))).toHaveProperty('size', 2);
+  });
 });

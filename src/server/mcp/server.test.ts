@@ -85,6 +85,7 @@ describe('XDB MCP facade', () => {
         'xdb_compare_artifacts',
         'xdb_create_artifacts',
         'xdb_create_plan',
+        'xdb_create_plan_family',
         'xdb_create_request',
         'xdb_get_run_status',
         'xdb_record_evaluation',
@@ -117,6 +118,19 @@ describe('XDB MCP facade', () => {
       });
       expect(conflict.isError).toBe(true);
       expect(repository.listRequests()).toHaveLength(1);
+
+      const familyResult = await client.callTool({
+        name: 'xdb_create_plan_family',
+        arguments: {
+          requestId: request.id,
+          provider: 'local',
+          strategies: ['conservative', 'expressive', 'conversion-led'],
+          idempotencyKey: 'family:invoice-flow:1',
+        },
+      });
+      const familyPlans = asRecord(familyResult.structuredContent).plans as Array<Record<string, unknown>>;
+      expect(familyPlans).toHaveLength(3);
+      expect(new Set(familyPlans.map((candidate) => candidate.fingerprint)).size).toBe(3);
 
       const planResult = await client.callTool({
         name: 'xdb_create_plan',

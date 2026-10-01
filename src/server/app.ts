@@ -13,6 +13,7 @@ import {
   evaluationInputSchema,
   inputHookSchema,
   knowledgeInputSchema,
+  planFamilyInputSchema,
   styleProfileInputSchema,
   type DashboardSummary,
 } from '../shared/contracts.js';
@@ -131,6 +132,12 @@ export function buildApp({ repository, config }: AppDependencies): FastifyInstan
     return reply.status(201).send(await service.createPlan(body.requestId, provider));
   });
 
+  app.get('/api/plan-families', async () => repository.listPlanFamilies());
+  app.post('/api/plan-families', async (request, reply) => {
+    const input = planFamilyInputSchema.parse(request.body);
+    return reply.status(201).send(await service.createPlanFamily(input));
+  });
+
   app.get('/api/ai-runs', async () => repository.listAiRuns());
 
   app.get('/api/runs', async () => repository.listRuns());
@@ -153,7 +160,7 @@ export function buildApp({ repository, config }: AppDependencies): FastifyInstan
 
   app.get('/api/export', async () => ({
     exportedAt: new Date().toISOString(),
-    version: 1,
+    version: 2,
     knowledge: repository.listKnowledge(),
     styleProfiles: repository.listStyleProfiles(),
     requests: repository.listRequests(),
@@ -162,6 +169,7 @@ export function buildApp({ repository, config }: AppDependencies): FastifyInstan
     runs: repository.listRuns(),
     evaluations: repository.listEvaluations(),
     comparisons: repository.listComparisons(),
+    comparisonContexts: service.listComparisonContexts(),
   }));
 
   app.get('/api/export/evaluations.jsonl', async (_request, reply) => {

@@ -42,6 +42,7 @@ describe('creation adapters', () => {
     expect(html).toContain('@media (max-width: 800px)');
     expect(html).toContain('noindex,nofollow');
     expect(html).toContain('aria-label');
+    expect(html).toContain('class="strategy-baseline"');
   });
 
   it('creates a retryable Figma plan and script without claiming execution', () => {

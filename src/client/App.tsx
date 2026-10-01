@@ -163,15 +163,29 @@ function CreateStudio({ data, refresh }: { data: AppData; refresh: () => Promise
           outputMode: mode,
         }),
       });
-      const plan = await api<DesignPlan>('/api/plans', {
-        method: 'POST',
-        body: JSON.stringify({ requestId: request.id, provider }),
-      });
-      const run = await api<CreationRun>('/api/runs', {
-        method: 'POST',
-        body: JSON.stringify({ planId: plan.id, outputMode: mode, figmaFileKey: null }),
-      });
-      setMessage(run.summary);
+      if (provider === 'local') {
+        const result = await api<{ plans: DesignPlan[] }>('/api/plan-families', {
+          method: 'POST',
+          body: JSON.stringify({ requestId: request.id }),
+        });
+        for (const plan of result.plans) {
+          await api<CreationRun>('/api/runs', {
+            method: 'POST',
+            body: JSON.stringify({ planId: plan.id, outputMode: mode, figmaFileKey: null }),
+          });
+        }
+        setMessage(`${result.plans.length}件の比較候補を生成しました。Evaluateで比較できます。`);
+      } else {
+        const plan = await api<DesignPlan>('/api/plans', {
+          method: 'POST',
+          body: JSON.stringify({ requestId: request.id, provider }),
+        });
+        const run = await api<CreationRun>('/api/runs', {
+          method: 'POST',
+          body: JSON.stringify({ planId: plan.id, outputMode: mode, figmaFileKey: null }),
+        });
+        setMessage(run.summary);
+      }
       await refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '生成に失敗しました。');
@@ -203,7 +217,7 @@ function CreateStudio({ data, refresh }: { data: AppData; refresh: () => Promise
           <ul>{data.knowledge.slice(0, 3).map((item) => <li key={item.id}><span>{item.kind}</span>{item.title}</li>)}</ul>
         </aside>
       </section>
-      {latestPlan && <section className="panel plan-preview"><div className="panel-heading"><div><p className="kicker">LATEST PLAN · {latestPlan.generation.provider}{latestPlan.generation.fallbackUsed ? ' · FALLBACK' : ''}</p><h2>{latestPlan.designDirection.primaryConcept}</h2></div><span className="plan-version">v{latestPlan.version}</span></div><p>{latestPlan.rationale}</p><div className="section-flow">{latestPlan.sections.map((section, index) => <div key={section.id}><span>{String(index + 1).padStart(2, '0')}</span><b>{section.type}</b><small>{section.component}</small></div>)}</div></section>}
+      {latestPlan && <section className="panel plan-preview"><div className="panel-heading"><div><p className="kicker">LATEST PLAN · {latestPlan.generation.provider} · {latestPlan.variantStrategy}{latestPlan.generation.fallbackUsed ? ' · FALLBACK' : ''}</p><h2>{latestPlan.designDirection.primaryConcept}</h2></div><span className="plan-version">#{latestPlan.candidateIndex + 1} · v{latestPlan.version}</span></div><p>{latestPlan.rationale}</p><div className="section-flow">{latestPlan.sections.map((section, index) => <div key={section.id}><span>{String(index + 1).padStart(2, '0')}</span><b>{section.type}</b><small>{section.component}</small></div>)}</div></section>}
       <section className="panel ai-audit">
         <div className="panel-heading"><div><p className="kicker">AI RUN AUDIT</p><h2>Planning実行履歴</h2></div><span>{data.config.capabilities.anthropicMonthlyTokensUsed} / {data.config.capabilities.anthropicMonthlyTokenBudget} monthly tokens</span></div>
         {data.aiRuns.length === 0 ? <EmptyState>まだPlanning実行履歴がありません。</EmptyState> : <div className="ai-run-list">{data.aiRuns.slice(0, 6).map((run) => <article key={run.id}><div><StatusBadge status={run.status} /><b>{run.provider}{run.model ? ` · ${run.model}` : ''}</b><time>{formatDate(run.createdAt)}</time></div><p>{run.inputTokens === null && run.outputTokens === null ? 'tokens not reported' : `${(run.inputTokens ?? 0) + (run.outputTokens ?? 0)} tokens`} · {run.latencyMs} ms · {run.attemptCount} attempts</p>{run.errorCode && <small>{run.errorCode}: {run.error}</small>}</article>)}</div>}
@@ -250,20 +264,40 @@ function IllustrationStudio({ data }: { data: AppData }) {
 }
 
 function ReviewStudio({ data, refresh }: { data: AppData; refresh: () => Promise<void> }) {
-  const htmlArtifacts = data.runs.flatMap((run) => run.artifacts).filter((artifact) => artifact.kind === 'html');
   const [rationale, setRationale] = useState('要件への適合度と情報階層がより明確だったため。');
   const [message, setMessage] = useState<string | null>(null);
-  const pair = htmlArtifacts.slice(0, 2);
+  const [artifactAId, setArtifactAId] = useState<string | null>(null);
+  const [artifactBId, setArtifactBId] = useState<string | null>(null);
+  const candidates = useMemo(() => {
+    const plans = new Map(data.plans.map((plan) => [plan.id, plan]));
+    return data.runs.flatMap((run) => {
+      const plan = plans.get(run.planId);
+      const artifact = run.artifacts.find((item) => item.kind === 'html');
+      return plan && artifact ? [{ artifact, plan }] : [];
+    });
+  }, [data.plans, data.runs]);
+  const familyId = candidates.find((candidate) =>
+    candidates.filter((item) => item.plan.familyId === candidate.plan.familyId).length >= 2,
+  )?.plan.familyId;
+  const familyCandidates = candidates
+    .filter((candidate) => candidate.plan.familyId === familyId)
+    .sort((left, right) => left.plan.candidateIndex - right.plan.candidateIndex);
+  const candidateA = familyCandidates.find((candidate) => candidate.artifact.id === artifactAId)
+    ?? familyCandidates[0];
+  const candidateB = familyCandidates.find((candidate) =>
+    candidate.artifact.id === artifactBId && candidate.artifact.id !== candidateA?.artifact.id,
+  ) ?? familyCandidates.find((candidate) => candidate.artifact.id !== candidateA?.artifact.id);
+  const pair = candidateA && candidateB ? [candidateA, candidateB] : [];
   async function prefer(artifactId: string): Promise<void> {
-    if (pair.length < 2 || !data.requests[0]) return;
+    if (pair.length < 2 || !pair[0]) return;
     try {
-      await api('/api/comparisons', { method: 'POST', body: JSON.stringify({ requestId: data.requests[0].id, artifactAId: pair[0]?.id, artifactBId: pair[1]?.id, preferredArtifactId: artifactId, rationale }) });
+      await api('/api/comparisons', { method: 'POST', body: JSON.stringify({ requestId: pair[0].plan.requestId, artifactAId: pair[0].artifact.id, artifactBId: pair[1]?.artifact.id, preferredArtifactId: artifactId, rationale }) });
       setMessage('比較判断を保存しました。');
       await refresh();
     } catch (error) { setMessage(error instanceof Error ? error.message : '保存に失敗しました。'); }
   }
   return <div className="view-stack"><header className="page-heading"><div><p className="kicker">EVALUATE / 05</p><h1>スコアより先に、<br />選んだ理由を残す。</h1></div><p>絶対評価と比較評価を分け、コンセプトごとの選択傾向を蓄積します。</p></header>
-    {pair.length >= 2 ? <><section className="compare-grid">{pair.map((artifact, index) => <article className="compare-card" key={artifact.id}><header><span>Candidate {String.fromCharCode(65 + index)}</span><button onClick={() => void prefer(artifact.id)}>こちらを選ぶ</button></header><iframe src={`/artifacts/${artifact.path}`} title={`Candidate ${String.fromCharCode(65 + index)}`} /></article>)}</section><section className="panel review-reason"><label>選択理由<textarea value={rationale} onChange={(event) => setRationale(event.target.value)} rows={3} /></label>{message && <p className="form-message">{message}</p>}</section></> : <EmptyState>比較にはHTML生成物が2件必要です。Createから別の候補を生成してください。</EmptyState>}
+    {pair.length >= 2 ? <><section className="panel comparison-picker"><label>Candidate A<select value={pair[0]?.artifact.id} onChange={(event) => setArtifactAId(event.target.value)}>{familyCandidates.filter((candidate) => candidate.artifact.id !== pair[1]?.artifact.id).map((candidate) => <option value={candidate.artifact.id} key={candidate.artifact.id}>{candidate.plan.variantStrategy}</option>)}</select></label><label>Candidate B<select value={pair[1]?.artifact.id} onChange={(event) => setArtifactBId(event.target.value)}>{familyCandidates.filter((candidate) => candidate.artifact.id !== pair[0]?.artifact.id).map((candidate) => <option value={candidate.artifact.id} key={candidate.artifact.id}>{candidate.plan.variantStrategy}</option>)}</select></label></section><section className="compare-grid">{pair.map(({ artifact, plan }, index) => <article className="compare-card" key={artifact.id}><header><div><span>Candidate {String.fromCharCode(65 + index)} · {plan.variantStrategy}</span><small>{plan.generation.provider} · {plan.generation.model} · responsive desktop/mobile · content complete</small></div><button onClick={() => void prefer(artifact.id)}>こちらを選ぶ</button></header><iframe src={`/artifacts/${artifact.path}`} title={`Candidate ${String.fromCharCode(65 + index)}: ${plan.variantStrategy}`} /></article>)}</section><section className="panel review-reason"><label>選択理由<textarea value={rationale} onChange={(event) => setRationale(event.target.value)} rows={3} /></label>{message && <p className="form-message">{message}</p>}</section></> : <EmptyState>比較には同じPlan Familyの互換HTML候補が2件必要です。CreateからLocal候補を生成してください。</EmptyState>}
     <section className="evaluation-list"><div className="panel-heading"><div><p className="kicker">SCORE HISTORY</p><h2>評価履歴</h2></div><span>{data.evaluations.length} reviews</span></div>{data.evaluations.length === 0 ? <EmptyState>まだ評価がありません。</EmptyState> : data.evaluations.slice(0, 6).map((evaluation) => <article key={evaluation.id}><div><StatusBadge status={evaluation.decision} /><span>{evaluation.evaluatorType}</span><time>{formatDate(evaluation.createdAt)}</time></div><p>{evaluation.rationale}</p><div className="score-strip">{Object.entries(evaluation.scores).map(([key, value]) => <span key={key}><small>{scoreLabels[key as keyof ScoreSet]}</small><b>{value.toFixed(1)}</b></span>)}</div></article>)}</section>
   </div>;
 }
