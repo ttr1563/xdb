@@ -22,6 +22,7 @@ afterEach(() => {
 function createTestApp(
   providerOverrides: Partial<RuntimeConfig['design']['ai']['providers']['anthropic']> = {},
   credentialOverrides: Partial<RuntimeConfig['anthropic']> = {},
+  localProviderOverrides: Partial<RuntimeConfig['design']['ai']['providers']['local']> = {},
 ) {
   const directory = mkdtempSync(path.join(tmpdir(), 'xdb-test-'));
   temporaryDirectories.push(directory);
@@ -42,7 +43,7 @@ function createTestApp(
         ai: {
           defaultProvider: 'local',
           providers: {
-            local: { enabled: true },
+            local: { enabled: true, ...localProviderOverrides },
             anthropic: {
               enabled: true,
               allowExternalRequests: false,
@@ -69,6 +70,36 @@ function createTestApp(
 }
 
 describe('XDB API workflow', () => {
+  it('rejects plan family generation when the local provider is disabled', async () => {
+    const { app, database } = createTestApp({}, {}, { enabled: false });
+    const requestResponse = await app.inject({
+      method: 'POST',
+      url: '/api/requests',
+      payload: {
+        prompt: 'ローカル生成を無効化した状態でLPをデザインしてください',
+        projectName: 'Disabled Local Provider',
+        audience: '事業者',
+        objective: '設定ゲートを確認する',
+        concepts: ['明快'],
+        avoid: [],
+        outputMode: 'html',
+      },
+    });
+    const designRequest = requestResponse.json<DesignRequest>();
+
+    const familyResponse = await app.inject({
+      method: 'POST',
+      url: '/api/plan-families',
+      payload: { requestId: designRequest.id },
+    });
+
+    expect(familyResponse.statusCode).toBe(409);
+    expect(familyResponse.json()).toEqual(expect.objectContaining({ error: 'local_ai_provider_disabled' }));
+    expect((await app.inject({ method: 'GET', url: '/api/plan-families' })).json()).toEqual([]);
+    await app.close();
+    database.close();
+  });
+
   it('creates distinct local candidates and only accepts a comparable pair', async () => {
     const { app, database } = createTestApp();
     const requestResponse = await app.inject({

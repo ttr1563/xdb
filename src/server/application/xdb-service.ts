@@ -96,6 +96,9 @@ export class XdbService {
   }
 
   public async createPlanFamily(input: PlanFamilyInput): Promise<{ family: PlanFamily; plans: DesignPlan[] }> {
+    if (!this.dependencies.config.design.ai.providers.local.enabled) {
+      throw new ApplicationError('local_ai_provider_disabled', 409, 'local AI provider is disabled.');
+    }
     const request = this.requireRequest(input.requestId);
     const styleProfile = this.dependencies.repository.listStyleProfiles()[0];
     if (!styleProfile) throw new ApplicationError('style_profile_required', 409, 'A Style Profile is required.');
