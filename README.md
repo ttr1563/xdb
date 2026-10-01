@@ -130,6 +130,7 @@ npm run build
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [System design](docs/SYSTEM_DESIGN.md)
 - [Operations and recovery](docs/OPERATIONS.md)
 - [XDB agent skill](skills/xdb-design-intelligence/SKILL.md)
 - [Claude provider](skills/xdb-design-intelligence/references/claude-provider.md)
