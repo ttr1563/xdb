@@ -290,7 +290,7 @@ domain writeとoperation完了記録の間でprocessが停止すると結果は�
 - Auto Layoutとvariable bindingを優先する。
 - desktop 1440pxとmobile 390pxを生成・検証する。
 - 作成・変更node IDを返し、screenshotとstructural inspectionで検証する。
-- `operationKey`とdesktop/mobile root名を安定化し、再実行時は既存rootを検出する。片方だけ存在する場合は自動継続せずpartialとして記録する。
+- `operationKey`をrunへ固定し、desktop/mobile root名を安定化する。再実行時は全pageから各rootが同一pageに一件ずつ存在することを確認し、既存rootを`observedNodeIds`として記録する。片方だけ／重複／別pageの場合は自動継続しない。
 - 完了には両root、構造監査、両screenshot確認、clipped text／placeholder textが0であることを要求する。
 - 同一operationの同一証跡はreplayし、異なる証跡または別operationによる二重完了は拒否する。
 - 未接続時はoperation planとscriptを残し、実行済みとは表示しない。
@@ -422,7 +422,7 @@ prompt本文やcredentialをmetric labelへ含めません。個人運用段階�
 - Claude未接続fallbackとAiRun audit。
 - migration from previous schema version。
 - output adapter disabled／missing target failure。
-- Figma delivery replay、二重完了拒否、compound instance node ID。
+- Figma delivery replay、run外operation拒否、完了状態の逆戻り防止、compound instance node ID、v7→v8 migration。
 - JSON／JSONL export compatibility。
 
 ### Browser

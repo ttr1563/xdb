@@ -131,6 +131,7 @@ function toFigmaDelivery(row: SqlRow): FigmaDelivery {
     mobileNodeId: row.mobile_node_id === null ? null : String(row.mobile_node_id),
     createdNodeIds: parseJson<string[]>(row.created_node_ids_json),
     mutatedNodeIds: parseJson<string[]>(row.mutated_node_ids_json),
+    observedNodeIds: parseJson<string[]>(row.observed_node_ids_json),
     desktopStructure: row.desktop_structure_json === null ? null : parseJson<FigmaDelivery['desktopStructure']>(row.desktop_structure_json),
     mobileStructure: row.mobile_structure_json === null ? null : parseJson<FigmaDelivery['mobileStructure']>(row.mobile_structure_json),
     desktopScreenshotCaptured: Boolean(row.desktop_screenshot_captured),
@@ -437,9 +438,10 @@ export class Repository {
       this.database.prepare(`
         INSERT INTO figma_deliveries (
           id, run_id, operation_key, file_key, status, page_id, desktop_node_id, mobile_node_id,
-          created_node_ids_json, mutated_node_ids_json, desktop_structure_json, mobile_structure_json,
+          created_node_ids_json, mutated_node_ids_json, observed_node_ids_json,
+          desktop_structure_json, mobile_structure_json,
           desktop_screenshot_captured, mobile_screenshot_captured, error, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         delivery.id,
         delivery.runId,
@@ -451,6 +453,7 @@ export class Repository {
         delivery.mobileNodeId,
         JSON.stringify(delivery.createdNodeIds),
         JSON.stringify(delivery.mutatedNodeIds),
+        JSON.stringify(delivery.observedNodeIds),
         delivery.desktopStructure === null ? null : JSON.stringify(delivery.desktopStructure),
         delivery.mobileStructure === null ? null : JSON.stringify(delivery.mobileStructure),
         delivery.desktopScreenshotCaptured ? 1 : 0,
@@ -467,8 +470,11 @@ export class Repository {
         : hasHtml
           ? `HTMLは生成済みですが、Figma deliveryは${input.status}です。`
           : `Figma deliveryは${input.status}です。`;
-      this.database.prepare('UPDATE creation_runs SET status = ?, summary = ? WHERE id = ?')
-        .run(runStatus, summary, input.runId);
+      this.database.prepare(`
+        UPDATE creation_runs
+        SET figma_file_key = COALESCE(figma_file_key, ?), status = ?, summary = ?
+        WHERE id = ?
+      `).run(input.fileKey, runStatus, summary, input.runId);
       return delivery;
     })();
   }

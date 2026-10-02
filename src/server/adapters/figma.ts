@@ -83,11 +83,24 @@ export function createFigmaExecutionScript(plan: DesignPlan, runId: string): str
 const spec = ${payload};
 const createdNodeIds = [];
 const createdVariableIds = [];
-const existingRoots = figma.currentPage.children.filter((child) => child.name === spec.desktopName || child.name === spec.mobileName);
-if (existingRoots.length === 2) {
-  return { success: true, replayed: true, operationKey: spec.operationKey, createdNodeIds: [], mutatedNodeIds: [], rootNodeIds: existingRoots.map((node) => node.id) };
+await figma.loadAllPagesAsync();
+const fileNodes = figma.root.children.flatMap((page) => page.children);
+const desktopRoots = fileNodes.filter((node) => node.name === spec.desktopName);
+const mobileRoots = fileNodes.filter((node) => node.name === spec.mobileName);
+if (desktopRoots.length === 1 && mobileRoots.length === 1 && desktopRoots[0].parent?.id === mobileRoots[0].parent?.id) {
+  const desktop = desktopRoots[0];
+  const mobile = mobileRoots[0];
+  return {
+    success: true,
+    replayed: true,
+    operationKey: spec.operationKey,
+    createdNodeIds: [],
+    mutatedNodeIds: [],
+    observedNodeIds: [desktop.id, mobile.id],
+    rootNodeIds: [desktop.id, mobile.id],
+  };
 }
-if (existingRoots.length > 0) throw new Error('Partial XDB Figma operation detected. Inspect the existing root before retrying.');
+if (desktopRoots.length > 0 || mobileRoots.length > 0) throw new Error('Partial or duplicate XDB Figma operation detected. Inspect every page before retrying.');
 let maxX = 0;
 for (const child of figma.currentPage.children) maxX = Math.max(maxX, child.x + child.width);
 const fonts = await figma.listAvailableFontsAsync();
@@ -171,6 +184,7 @@ return {
   operationKey: spec.operationKey,
   createdNodeIds,
   mutatedNodeIds: [],
+  observedNodeIds: [],
   createdVariableIds,
   rootNodeIds: [desktop.id, mobile.id],
   sectionCount: spec.sections.length,

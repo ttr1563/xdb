@@ -325,6 +325,7 @@ export const figmaDeliveryInputSchema = z.object({
   mobileNodeId: figmaNodeIdSchema.nullable(),
   createdNodeIds: z.array(figmaNodeIdSchema).max(1_000).default([]),
   mutatedNodeIds: z.array(figmaNodeIdSchema).max(1_000).default([]),
+  observedNodeIds: z.array(figmaNodeIdSchema).max(1_000).default([]),
   desktopStructure: figmaStructureSchema.nullable(),
   mobileStructure: figmaStructureSchema.nullable(),
   desktopScreenshotCaptured: z.boolean(),

@@ -39,7 +39,7 @@ Claude、Figma、画像生成providerは任意です。未接続の機能を実�
 
 XDBはFigma用のoperation planと`use_figma`向け実行scriptを生成します。接続済みagentは、Skillの手順に従って対象fileを調査し、Auto Layout、variable、既存componentを使う編集可能なdesktop/mobile frameを作成します。作成・変更node ID、構造監査、desktop/mobile screenshot確認を`FigmaDelivery`として記録できた時点でのみrunを`completed`へ更新します。
 
-Figma account、既存file、write接続がない場合はrunを`partial`または`blocked_external`として保持します。外部writeは自動retryせず、安定した`operationKey`とroot名で既存結果を検出します。同じ操作の同じ証跡はreplayでき、異なる証跡や二重完了は409で拒否します。
+Figma account、既存file、write接続がない場合はrunを`partial`または`blocked_external`として保持します。外部writeは自動retryせず、runに固定した`operationKey`とroot名で全pageから既存結果を検出します。同じ操作の同じ証跡はreplayでき、既存rootは`observedNodeIds`として記録します。異なる証跡やoperation keyは409で拒否します。
 
 ## 導入方法
 

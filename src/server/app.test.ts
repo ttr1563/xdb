@@ -23,6 +23,7 @@ function createTestApp(
   providerOverrides: Partial<RuntimeConfig['design']['ai']['providers']['anthropic']> = {},
   credentialOverrides: Partial<RuntimeConfig['anthropic']> = {},
   localProviderOverrides: Partial<RuntimeConfig['design']['ai']['providers']['local']> = {},
+  figmaOverrides: Partial<RuntimeConfig['design']['figma']> = {},
 ) {
   const directory = mkdtempSync(path.join(tmpdir(), 'xdb-test-'));
   temporaryDirectories.push(directory);
@@ -58,7 +59,7 @@ function createTestApp(
             },
           },
         },
-        figma: { enabled: true, requireExistingFile: true, reuseExistingComponents: true, reuseExistingVariables: true },
+        figma: { enabled: true, requireExistingFile: true, reuseExistingComponents: true, reuseExistingVariables: true, ...figmaOverrides },
         html: { enabled: true, format: 'standalone', responsive: true, accessibilityTarget: 'WCAG-AA' },
         illustration: { enabled: true, candidateCount: 4, requireHumanApproval: true, storeRejectedCandidates: true },
         evaluation: { automatic: true, pairwiseComparison: true, requireHumanReview: true },
@@ -269,7 +270,7 @@ describe('XDB API workflow', () => {
   });
 
   it('records validated Figma delivery evidence and completes the run', async () => {
-    const { app, database } = createTestApp();
+    const { app, database } = createTestApp({}, {}, {}, { requireExistingFile: false });
     const requestResponse = await app.inject({
       method: 'POST',
       url: '/api/requests',
@@ -294,7 +295,7 @@ describe('XDB API workflow', () => {
     const runResponse = await app.inject({
       method: 'POST',
       url: '/api/runs',
-      payload: { planId: plan.id, outputMode: 'figma', figmaFileKey: 'test-file-key' },
+      payload: { planId: plan.id, outputMode: 'figma', figmaFileKey: null },
     });
     expect(runResponse.statusCode, runResponse.body).toBe(201);
     const run = runResponse.json<CreationRun>();
@@ -317,8 +318,9 @@ describe('XDB API workflow', () => {
       pageId: '0:1',
       desktopNodeId: '10:1',
       mobileNodeId: '20:1',
-      createdNodeIds: ['10:1', '20:1', 'I10:2;30:4'],
+      createdNodeIds: ['I10:2;30:4'],
       mutatedNodeIds: [],
+      observedNodeIds: ['10:1', '20:1'],
       desktopStructure: structure,
       mobileStructure: { ...structure, width: 390, height: 4100 },
       desktopScreenshotCaptured: true,
@@ -345,14 +347,13 @@ describe('XDB API workflow', () => {
     });
     expect(duplicateCompletionResponse.statusCode).toBe(409);
     expect(duplicateCompletionResponse.json()).toEqual(expect.objectContaining({
-      error: 'figma_delivery_already_completed',
+      error: 'figma_operation_mismatch',
     }));
     const latePartialResponse = await app.inject({
       method: 'POST',
       url: '/api/figma-deliveries',
       payload: {
         ...deliveryInput,
-        operationKey: `figma:${run.id}:recovery`,
         status: 'partial',
         desktopScreenshotCaptured: false,
         mobileScreenshotCaptured: false,
@@ -360,8 +361,10 @@ describe('XDB API workflow', () => {
       },
     });
     expect(latePartialResponse.statusCode).toBe(409);
+    expect(latePartialResponse.json()).toEqual(expect.objectContaining({ error: 'figma_operation_conflict' }));
     const statusResponse = await app.inject({ method: 'GET', url: `/api/runs` });
     expect(statusResponse.json<CreationRun[]>()[0]?.status).toBe('completed');
+    expect(statusResponse.json<CreationRun[]>()[0]?.figmaFileKey).toBe('test-file-key');
     const exportResponse = await app.inject({ method: 'GET', url: '/api/export' });
     expect(exportResponse.json<{ version: number; figmaDeliveries: FigmaDelivery[] }>()).toMatchObject({
       version: 3,

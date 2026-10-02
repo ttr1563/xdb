@@ -54,7 +54,10 @@ describe('creation adapters', () => {
     expect(operationPlan.operations.some((operation) => operation.op === 'create-mobile-variant')).toBe(true);
     expect(script).toContain(`XDB/${runId}/desktop`);
     expect(script).toContain(`XDB/${runId}/mobile`);
-    expect(script).toContain('Partial XDB Figma operation detected');
+    expect(script).toContain('figma.root.children.flatMap');
+    expect(script).toContain('figma.loadAllPagesAsync');
+    expect(script).toContain('desktopRoots[0].parent?.id === mobileRoots[0].parent?.id');
+    expect(script).toContain('observedNodeIds: [desktop.id, mobile.id]');
     expect(script).toContain('The Design Plan is missing a required Figma color token');
     expect(script).toContain('figma.createAutoLayout');
   });

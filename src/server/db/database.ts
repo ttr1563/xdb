@@ -218,6 +218,10 @@ const migrationSeven = `
   CREATE INDEX IF NOT EXISTS idx_figma_deliveries_run ON figma_deliveries(run_id, created_at);
 `;
 
+const migrationEight = `
+  ALTER TABLE figma_deliveries ADD COLUMN observed_node_ids_json TEXT NOT NULL DEFAULT '[]';
+`;
+
 export function openDatabase(databasePath: string): Database.Database {
   mkdirSync(path.dirname(databasePath), { recursive: true });
   const database = new Database(databasePath);
@@ -346,6 +350,20 @@ export function openDatabase(databasePath: string): Database.Database {
       database
         .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
         .run(7, new Date().toISOString());
+      database.exec('COMMIT;');
+    } catch (error) {
+      database.exec('ROLLBACK;');
+      throw error;
+    }
+  }
+
+  if (currentVersion < 8) {
+    database.exec('BEGIN IMMEDIATE;');
+    try {
+      database.exec(migrationEight);
+      database
+        .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
+        .run(8, new Date().toISOString());
       database.exec('COMMIT;');
     } catch (error) {
       database.exec('ROLLBACK;');

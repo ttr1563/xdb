@@ -160,8 +160,17 @@ export class XdbService {
     if (run.outputMode !== 'figma' && run.outputMode !== 'both') {
       throw new ApplicationError('figma_delivery_not_expected', 409, 'The Creation Run does not include Figma output.');
     }
-    if (!run.figmaFileKey || run.figmaFileKey !== input.fileKey) {
+    if ((run.figmaFileKey && run.figmaFileKey !== input.fileKey)
+      || (!run.figmaFileKey && this.dependencies.config.design.figma.requireExistingFile)) {
       throw new ApplicationError('figma_file_mismatch', 409, 'The delivery file does not match the Creation Run target.');
+    }
+    const expectedOperationKey = `figma:${run.id}:v1`;
+    if (input.operationKey !== expectedOperationKey) {
+      throw new ApplicationError(
+        'figma_operation_mismatch',
+        409,
+        'The delivery operation key does not match the Creation Run operation.',
+      );
     }
     const existing = this.dependencies.repository.getFigmaDelivery(input.runId, input.operationKey);
     if (existing) {
@@ -181,7 +190,11 @@ export class XdbService {
       );
     }
     if (input.status === 'completed') {
-      const evidenceIds = new Set([...input.createdNodeIds, ...input.mutatedNodeIds]);
+      const evidenceIds = new Set([
+        ...input.createdNodeIds,
+        ...input.mutatedNodeIds,
+        ...input.observedNodeIds,
+      ]);
       if (!input.desktopNodeId || !input.mobileNodeId
         || !evidenceIds.has(input.desktopNodeId) || !evidenceIds.has(input.mobileNodeId)) {
         throw new ApplicationError(

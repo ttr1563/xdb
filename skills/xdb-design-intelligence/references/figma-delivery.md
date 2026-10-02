@@ -12,7 +12,7 @@ Before mutation:
 During mutation:
 
 - Build with Auto Layout and semantic variable bindings.
-- Use the plan's stable operation key and desktop/mobile root names. If both roots already exist, inspect and replay the existing result; if only one exists, stop and record a partial result.
+- Use the plan's run-bound operation key and desktop/mobile root names. Search every page. Replay only when exactly one of each root exists on the same page, recording them as observed rather than created/mutated nodes; otherwise stop for inspection.
 - Return every created or mutated node ID.
 - Keep desktop and mobile frames linked to the same design decisions.
 - Do not paste the HTML preview as a flattened image.
