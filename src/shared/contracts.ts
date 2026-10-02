@@ -301,6 +301,64 @@ export const creationRunSchema = creationRunInputSchema.extend({
 });
 export type CreationRun = z.infer<typeof creationRunSchema>;
 
+const figmaNodeIdSchema = z.string()
+  .regex(/^(?:I)?\d+[:\-]\d+(?:;\d+[:\-]\d+)*$/)
+  .transform((value) => value.replaceAll('-', ':'));
+const figmaStructureSchema = z.object({
+  nodeCount: z.number().int().nonnegative(),
+  textNodeCount: z.number().int().nonnegative(),
+  instanceCount: z.number().int().nonnegative(),
+  width: z.number().positive(),
+  height: z.number().positive(),
+  clippedTextCount: z.number().int().nonnegative(),
+  placeholderTextCount: z.number().int().nonnegative(),
+  imageFillCount: z.number().int().nonnegative(),
+});
+
+export const figmaDeliveryInputSchema = z.object({
+  runId: z.string().uuid(),
+  operationKey: z.string().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/),
+  fileKey: z.string().min(1).max(256),
+  status: z.enum(['completed', 'partial', 'failed']),
+  pageId: figmaNodeIdSchema.nullable(),
+  desktopNodeId: figmaNodeIdSchema.nullable(),
+  mobileNodeId: figmaNodeIdSchema.nullable(),
+  createdNodeIds: z.array(figmaNodeIdSchema).max(1_000).default([]),
+  mutatedNodeIds: z.array(figmaNodeIdSchema).max(1_000).default([]),
+  observedNodeIds: z.array(figmaNodeIdSchema).max(1_000).default([]),
+  desktopStructure: figmaStructureSchema.nullable(),
+  mobileStructure: figmaStructureSchema.nullable(),
+  desktopScreenshotCaptured: z.boolean(),
+  mobileScreenshotCaptured: z.boolean(),
+  error: z.string().min(1).max(2_000).nullable(),
+}).superRefine((input, context) => {
+  if (input.status === 'completed') {
+    const missingEvidence = !input.pageId || !input.desktopNodeId || !input.mobileNodeId
+      || !input.desktopStructure || !input.mobileStructure
+      || !input.desktopScreenshotCaptured || !input.mobileScreenshotCaptured;
+    if (missingEvidence) {
+      context.addIssue({ code: 'custom', path: ['status'], message: 'Completed delivery requires desktop/mobile structure and screenshot evidence.' });
+    }
+    const structures = [input.desktopStructure, input.mobileStructure].filter((value) => value !== null);
+    if (structures.some((value) => value.clippedTextCount > 0 || value.placeholderTextCount > 0)) {
+      context.addIssue({ code: 'custom', path: ['status'], message: 'Completed delivery cannot contain clipped or placeholder text.' });
+    }
+    if (input.error !== null) {
+      context.addIssue({ code: 'custom', path: ['error'], message: 'Completed delivery cannot include an error.' });
+    }
+  }
+  if (input.status !== 'completed' && input.error === null) {
+    context.addIssue({ code: 'custom', path: ['error'], message: 'Partial or failed delivery requires an error.' });
+  }
+});
+export type FigmaDeliveryInput = z.infer<typeof figmaDeliveryInputSchema>;
+
+export const figmaDeliverySchema = figmaDeliveryInputSchema.extend({
+  id: z.string().uuid(),
+  createdAt: z.string().datetime(),
+});
+export type FigmaDelivery = z.infer<typeof figmaDeliverySchema>;
+
 export const evaluationInputSchema = z.object({
   artifactId: z.string().uuid(),
   evaluatorType: z.enum(['human', 'automatic']),

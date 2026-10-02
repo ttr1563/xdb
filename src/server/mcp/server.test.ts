@@ -89,6 +89,7 @@ describe('XDB MCP facade', () => {
         'xdb_create_request',
         'xdb_get_run_status',
         'xdb_record_evaluation',
+        'xdb_record_figma_delivery',
         'xdb_search_knowledge',
       ]);
 
@@ -166,6 +167,49 @@ describe('XDB MCP facade', () => {
         arguments: { runId: runContent.runId },
       });
       expect(asRecord(asRecord(status.structuredContent).run).status).toBe('completed');
+
+      const figmaRunResult = await client.callTool({
+        name: 'xdb_create_artifacts',
+        arguments: {
+          planId: plan.id,
+          outputMode: 'figma',
+          figmaFileKey: 'figma-test-file',
+          idempotencyKey: 'artifacts:invoice-figma:1',
+        },
+      });
+      const figmaRun = asRecord(figmaRunResult.structuredContent);
+      const structure = {
+        nodeCount: 20,
+        textNodeCount: 8,
+        instanceCount: 2,
+        width: 1440,
+        height: 3000,
+        clippedTextCount: 0,
+        placeholderTextCount: 0,
+        imageFillCount: 0,
+      };
+      const delivery = await client.callTool({
+        name: 'xdb_record_figma_delivery',
+        arguments: {
+          runId: figmaRun.runId,
+          operationKey: `figma:${String(figmaRun.runId)}:v1`,
+          fileKey: 'figma-test-file',
+          status: 'completed',
+          pageId: '0:1',
+          desktopNodeId: '10:1',
+          mobileNodeId: '20:1',
+          createdNodeIds: ['10:1', '20:1'],
+          mutatedNodeIds: [],
+          desktopStructure: structure,
+          mobileStructure: { ...structure, width: 390, height: 4000 },
+          desktopScreenshotCaptured: true,
+          mobileScreenshotCaptured: true,
+          error: null,
+          idempotencyKey: 'delivery:invoice-figma:1',
+        },
+      });
+      expect(asRecord(delivery.structuredContent).replayed).toBe(false);
+      expect(repository.getRun(String(figmaRun.runId))?.status).toBe('completed');
     } finally {
       await client.close();
       await server.close();

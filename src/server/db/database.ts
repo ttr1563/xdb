@@ -192,6 +192,36 @@ const migrationSix = `
   CREATE INDEX IF NOT EXISTS idx_plan_families_request ON plan_families(request_id);
 `;
 
+const migrationSeven = `
+  CREATE TABLE IF NOT EXISTS figma_deliveries (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES creation_runs(id),
+    operation_key TEXT NOT NULL,
+    file_key TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('completed', 'partial', 'failed')),
+    page_id TEXT,
+    desktop_node_id TEXT,
+    mobile_node_id TEXT,
+    created_node_ids_json TEXT NOT NULL,
+    mutated_node_ids_json TEXT NOT NULL,
+    desktop_structure_json TEXT,
+    mobile_structure_json TEXT,
+    desktop_screenshot_captured INTEGER NOT NULL CHECK (desktop_screenshot_captured IN (0, 1)),
+    mobile_screenshot_captured INTEGER NOT NULL CHECK (mobile_screenshot_captured IN (0, 1)),
+    error TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE (run_id, operation_key)
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_figma_deliveries_completed_run
+    ON figma_deliveries(run_id) WHERE status = 'completed';
+  CREATE INDEX IF NOT EXISTS idx_figma_deliveries_run ON figma_deliveries(run_id, created_at);
+`;
+
+const migrationEight = `
+  ALTER TABLE figma_deliveries ADD COLUMN observed_node_ids_json TEXT NOT NULL DEFAULT '[]';
+`;
+
 export function openDatabase(databasePath: string): Database.Database {
   mkdirSync(path.dirname(databasePath), { recursive: true });
   const database = new Database(databasePath);
@@ -306,6 +336,34 @@ export function openDatabase(databasePath: string): Database.Database {
       database
         .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
         .run(6, new Date().toISOString());
+      database.exec('COMMIT;');
+    } catch (error) {
+      database.exec('ROLLBACK;');
+      throw error;
+    }
+  }
+
+  if (currentVersion < 7) {
+    database.exec('BEGIN IMMEDIATE;');
+    try {
+      database.exec(migrationSeven);
+      database
+        .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
+        .run(7, new Date().toISOString());
+      database.exec('COMMIT;');
+    } catch (error) {
+      database.exec('ROLLBACK;');
+      throw error;
+    }
+  }
+
+  if (currentVersion < 8) {
+    database.exec('BEGIN IMMEDIATE;');
+    try {
+      database.exec(migrationEight);
+      database
+        .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
+        .run(8, new Date().toISOString());
       database.exec('COMMIT;');
     } catch (error) {
       database.exec('ROLLBACK;');

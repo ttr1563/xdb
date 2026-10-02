@@ -10,6 +10,8 @@ import type {
   DesignRequestInput,
   Evaluation,
   EvaluationInput,
+  FigmaDelivery,
+  FigmaDeliveryInput,
   InputHookResult,
   KnowledgeItem,
   PlanFamily,
@@ -139,6 +141,10 @@ export class XdbService {
     if ((input.outputMode === 'figma' || input.outputMode === 'both') && !config.figma.enabled) {
       throw new ApplicationError('figma_adapter_disabled', 409, 'The Figma adapter is disabled.');
     }
+    if ((input.outputMode === 'figma' || input.outputMode === 'both')
+      && config.figma.requireExistingFile && !input.figmaFileKey) {
+      throw new ApplicationError('figma_file_required', 400, 'A target Figma file key is required.');
+    }
     const plan = this.dependencies.repository.getPlan(input.planId);
     if (!plan) throw new ApplicationError('plan_not_found', 404, 'The Design Plan was not found.');
     return executeCreation(input, plan, {
@@ -146,6 +152,59 @@ export class XdbService {
       artifactStore: this.dependencies.artifactStore,
       figmaConnected: Boolean(this.dependencies.config.figmaMcpServer),
     });
+  }
+
+  public recordFigmaDelivery(input: FigmaDeliveryInput): FigmaDelivery {
+    const run = this.dependencies.repository.getRun(input.runId);
+    if (!run) throw new ApplicationError('creation_run_not_found', 404, 'The Creation Run was not found.');
+    if (run.outputMode !== 'figma' && run.outputMode !== 'both') {
+      throw new ApplicationError('figma_delivery_not_expected', 409, 'The Creation Run does not include Figma output.');
+    }
+    if ((run.figmaFileKey && run.figmaFileKey !== input.fileKey)
+      || (!run.figmaFileKey && this.dependencies.config.design.figma.requireExistingFile)) {
+      throw new ApplicationError('figma_file_mismatch', 409, 'The delivery file does not match the Creation Run target.');
+    }
+    const expectedOperationKey = `figma:${run.id}:v1`;
+    if (input.operationKey !== expectedOperationKey) {
+      throw new ApplicationError(
+        'figma_operation_mismatch',
+        409,
+        'The delivery operation key does not match the Creation Run operation.',
+      );
+    }
+    const existing = this.dependencies.repository.getFigmaDelivery(input.runId, input.operationKey);
+    if (existing) {
+      const existingInput = { ...existing } as Partial<FigmaDelivery>;
+      delete existingInput.id;
+      delete existingInput.createdAt;
+      if (JSON.stringify(existingInput) !== JSON.stringify(input)) {
+        throw new ApplicationError('figma_operation_conflict', 409, 'The Figma operation key was reused with different evidence.');
+      }
+      return existing;
+    }
+    if (this.dependencies.repository.getCompletedFigmaDelivery(input.runId)) {
+      throw new ApplicationError(
+        'figma_delivery_already_completed',
+        409,
+        'The Creation Run already has a completed Figma delivery.',
+      );
+    }
+    if (input.status === 'completed') {
+      const evidenceIds = new Set([
+        ...input.createdNodeIds,
+        ...input.mutatedNodeIds,
+        ...input.observedNodeIds,
+      ]);
+      if (!input.desktopNodeId || !input.mobileNodeId
+        || !evidenceIds.has(input.desktopNodeId) || !evidenceIds.has(input.mobileNodeId)) {
+        throw new ApplicationError(
+          'figma_node_evidence_incomplete',
+          409,
+          'Completed delivery roots must be included in created or mutated node IDs.',
+        );
+      }
+    }
+    return this.dependencies.repository.createFigmaDelivery(input);
   }
 
   public recordEvaluation(input: EvaluationInput): Evaluation {

@@ -12,6 +12,8 @@ import type {
   DesignRequestInput,
   Evaluation,
   EvaluationInput,
+  FigmaDelivery,
+  FigmaDeliveryInput,
   KnowledgeInput,
   KnowledgeItem,
   PlanFamily,
@@ -114,6 +116,28 @@ function toPlan(row: SqlRow): DesignPlan {
     variantStrategy: row.variant_strategy as DesignPlan['variantStrategy'],
     candidateIndex: Number(row.candidate_index),
     fingerprint: String(row.fingerprint),
+  };
+}
+
+function toFigmaDelivery(row: SqlRow): FigmaDelivery {
+  return {
+    id: String(row.id),
+    runId: String(row.run_id),
+    operationKey: String(row.operation_key),
+    fileKey: String(row.file_key),
+    status: row.status as FigmaDelivery['status'],
+    pageId: row.page_id === null ? null : String(row.page_id),
+    desktopNodeId: row.desktop_node_id === null ? null : String(row.desktop_node_id),
+    mobileNodeId: row.mobile_node_id === null ? null : String(row.mobile_node_id),
+    createdNodeIds: parseJson<string[]>(row.created_node_ids_json),
+    mutatedNodeIds: parseJson<string[]>(row.mutated_node_ids_json),
+    observedNodeIds: parseJson<string[]>(row.observed_node_ids_json),
+    desktopStructure: row.desktop_structure_json === null ? null : parseJson<FigmaDelivery['desktopStructure']>(row.desktop_structure_json),
+    mobileStructure: row.mobile_structure_json === null ? null : parseJson<FigmaDelivery['mobileStructure']>(row.mobile_structure_json),
+    desktopScreenshotCaptured: Boolean(row.desktop_screenshot_captured),
+    mobileScreenshotCaptured: Boolean(row.mobile_screenshot_captured),
+    error: row.error === null ? null : String(row.error),
+    createdAt: String(row.created_at),
   };
 }
 
@@ -388,6 +412,71 @@ export class Repository {
   public getArtifact(id: string): Artifact | null {
     const row = asRow(this.database.prepare('SELECT * FROM artifacts WHERE id = ?').get(id));
     return row ? toArtifact(row) : null;
+  }
+
+  public listFigmaDeliveries(): FigmaDelivery[] {
+    return asRows(this.database.prepare('SELECT * FROM figma_deliveries ORDER BY created_at DESC').all()).map(toFigmaDelivery);
+  }
+
+  public getFigmaDelivery(runId: string, operationKey: string): FigmaDelivery | null {
+    const row = asRow(this.database.prepare(
+      'SELECT * FROM figma_deliveries WHERE run_id = ? AND operation_key = ?',
+    ).get(runId, operationKey));
+    return row ? toFigmaDelivery(row) : null;
+  }
+
+  public getCompletedFigmaDelivery(runId: string): FigmaDelivery | null {
+    const row = asRow(this.database.prepare(
+      "SELECT * FROM figma_deliveries WHERE run_id = ? AND status = 'completed' LIMIT 1",
+    ).get(runId));
+    return row ? toFigmaDelivery(row) : null;
+  }
+
+  public createFigmaDelivery(input: FigmaDeliveryInput): FigmaDelivery {
+    const delivery: FigmaDelivery = { ...input, id: randomUUID(), createdAt: now() };
+    return this.database.transaction(() => {
+      this.database.prepare(`
+        INSERT INTO figma_deliveries (
+          id, run_id, operation_key, file_key, status, page_id, desktop_node_id, mobile_node_id,
+          created_node_ids_json, mutated_node_ids_json, observed_node_ids_json,
+          desktop_structure_json, mobile_structure_json,
+          desktop_screenshot_captured, mobile_screenshot_captured, error, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        delivery.id,
+        delivery.runId,
+        delivery.operationKey,
+        delivery.fileKey,
+        delivery.status,
+        delivery.pageId,
+        delivery.desktopNodeId,
+        delivery.mobileNodeId,
+        JSON.stringify(delivery.createdNodeIds),
+        JSON.stringify(delivery.mutatedNodeIds),
+        JSON.stringify(delivery.observedNodeIds),
+        delivery.desktopStructure === null ? null : JSON.stringify(delivery.desktopStructure),
+        delivery.mobileStructure === null ? null : JSON.stringify(delivery.mobileStructure),
+        delivery.desktopScreenshotCaptured ? 1 : 0,
+        delivery.mobileScreenshotCaptured ? 1 : 0,
+        delivery.error,
+        delivery.createdAt,
+      );
+      const run = asRow(this.database.prepare('SELECT output_mode FROM creation_runs WHERE id = ?').get(input.runId));
+      if (!run) throw new Error('Creation Run disappeared while recording Figma delivery.');
+      const hasHtml = run.output_mode === 'both';
+      const runStatus = input.status === 'completed' ? 'completed' : hasHtml ? 'partial' : input.status;
+      const summary = input.status === 'completed'
+        ? '要求された出力とFigma deliveryの検証が完了しました。'
+        : hasHtml
+          ? `HTMLは生成済みですが、Figma deliveryは${input.status}です。`
+          : `Figma deliveryは${input.status}です。`;
+      this.database.prepare(`
+        UPDATE creation_runs
+        SET figma_file_key = COALESCE(figma_file_key, ?), status = ?, summary = ?
+        WHERE id = ?
+      `).run(input.fileKey, runStatus, summary, input.runId);
+      return delivery;
+    })();
   }
 
   public claimMcpOperation(idempotencyKey: string, tool: string, requestHash: string): McpOperationClaim {

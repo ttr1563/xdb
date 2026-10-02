@@ -9,6 +9,7 @@ import { openDatabase } from './database.js';
 
 function removeCandidateSchema(database: ReturnType<typeof openDatabase>): void {
   database.exec(`
+    DROP TABLE figma_deliveries;
     DROP INDEX idx_design_plans_family_candidate;
     DROP INDEX idx_design_plans_family_fingerprint;
     DROP INDEX idx_design_plans_fingerprint;
@@ -18,7 +19,7 @@ function removeCandidateSchema(database: ReturnType<typeof openDatabase>): void 
     ALTER TABLE design_plans DROP COLUMN variant_strategy;
     ALTER TABLE design_plans DROP COLUMN candidate_index;
     ALTER TABLE design_plans DROP COLUMN fingerprint;
-    DELETE FROM schema_migrations WHERE version = 6;
+    DELETE FROM schema_migrations WHERE version >= 6;
   `);
 }
 
@@ -38,7 +39,7 @@ describe('database migrations', () => {
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ai_runs'")
         .get() as { name: string } | undefined;
       const columns = upgraded.prepare('PRAGMA table_info(ai_runs)').all() as Array<{ name: string }>;
-      expect(version.version).toBe(6);
+      expect(version.version).toBe(8);
       expect(table?.name).toBe('ai_runs');
       expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(['error_code', 'attempt_count']));
       upgraded.close();
@@ -65,7 +66,7 @@ describe('database migrations', () => {
       const upgraded = openDatabase(databasePath);
       const columns = upgraded.prepare('PRAGMA table_info(ai_runs)').all() as Array<{ name: string }>;
       expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(['error_code', 'attempt_count']));
-      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(6);
+      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(8);
       upgraded.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });
@@ -88,7 +89,7 @@ describe('database migrations', () => {
       expect(table?.name).toBe('mcp_operations');
       const columns = upgraded.prepare('PRAGMA table_info(mcp_operations)').all() as Array<{ name: string }>;
       expect(columns.map((column) => column.name)).toContain('owner_token');
-      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(6);
+      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(8);
       upgraded.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });
@@ -107,7 +108,7 @@ describe('database migrations', () => {
       const upgraded = openDatabase(databasePath);
       const columns = upgraded.prepare('PRAGMA table_info(mcp_operations)').all() as Array<{ name: string }>;
       expect(columns.map((column) => column.name)).toContain('owner_token');
-      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(6);
+      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(8);
       upgraded.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });
@@ -171,7 +172,45 @@ describe('database migrations', () => {
         provider: 'anthropic',
       });
       expect(String(migrated.fingerprint)).toHaveLength(64);
-      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(6);
+      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(8);
+      upgraded.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('adds Figma delivery evidence storage to a version 6 database', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'xdb-migration-'));
+    const databasePath = path.join(directory, 'xdb.sqlite');
+    try {
+      const initial = openDatabase(databasePath);
+      initial.exec('DROP TABLE figma_deliveries; DELETE FROM schema_migrations WHERE version >= 7;');
+      initial.close();
+
+      const upgraded = openDatabase(databasePath);
+      const table = upgraded.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'figma_deliveries'",
+      ).get() as { name: string } | undefined;
+      expect(table?.name).toBe('figma_deliveries');
+      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(8);
+      upgraded.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('adds observed Figma node evidence to a version 7 database', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'xdb-migration-'));
+    const databasePath = path.join(directory, 'xdb.sqlite');
+    try {
+      const initial = openDatabase(databasePath);
+      initial.exec('ALTER TABLE figma_deliveries DROP COLUMN observed_node_ids_json; DELETE FROM schema_migrations WHERE version = 8;');
+      initial.close();
+
+      const upgraded = openDatabase(databasePath);
+      const columns = upgraded.prepare('PRAGMA table_info(figma_deliveries)').all() as Array<{ name: string }>;
+      expect(columns.map((column) => column.name)).toContain('observed_node_ids_json');
+      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(8);
       upgraded.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });

@@ -23,7 +23,7 @@ export async function executeCreation(
   const createdAt = new Date().toISOString();
   const wantsHtml = input.outputMode === 'html' || input.outputMode === 'both';
   const wantsFigma = input.outputMode === 'figma' || input.outputMode === 'both';
-  const status: CreationRun['status'] = wantsFigma && !dependencies.figmaConnected
+  const status: CreationRun['status'] = wantsFigma
     ? wantsHtml
       ? 'partial'
       : 'blocked_external'
@@ -31,8 +31,10 @@ export async function executeCreation(
   const summary = status === 'completed'
     ? '要求された出力を生成しました。'
     : status === 'partial'
-      ? 'HTMLを生成しました。Figmaは接続後にoperation planを実行できます。'
-      : 'Figma接続が未設定です。operation planと実行scriptを生成しました。';
+      ? 'HTMLを生成しました。Figma deliveryの実行・検証待ちです。'
+      : dependencies.figmaConnected
+        ? 'Figma operation planを生成しました。外部writeと検証結果の記録待ちです。'
+        : 'Figma接続が未設定です。operation planと実行scriptを生成しました。';
 
   dependencies.repository.saveCreationRun({ ...input, id, status, summary, createdAt });
   const artifacts = [];
@@ -42,7 +44,7 @@ export async function executeCreation(
     artifacts.push(dependencies.repository.saveArtifact(artifact));
   }
   if (wantsFigma) {
-    const operationPlan = createFigmaOperationPlan(plan, input.figmaFileKey);
+    const operationPlan = createFigmaOperationPlan(plan, id, input.figmaFileKey);
     const planArtifact = await dependencies.artifactStore.write(
       id,
       'figma-plan',
@@ -52,7 +54,7 @@ export async function executeCreation(
     const scriptArtifact = await dependencies.artifactStore.write(
       id,
       'figma-script',
-      createFigmaExecutionScript(plan),
+      createFigmaExecutionScript(plan, id),
     );
     artifacts.push(dependencies.repository.saveArtifact(scriptArtifact));
   }

@@ -46,11 +46,19 @@ describe('creation adapters', () => {
   });
 
   it('creates a retryable Figma plan and script without claiming execution', () => {
-    const operationPlan = createFigmaOperationPlan(plan, null);
-    const script = createFigmaExecutionScript(plan);
+    const runId = randomUUID();
+    const operationPlan = createFigmaOperationPlan(plan, runId, null);
+    const script = createFigmaExecutionScript(plan, runId);
     expect(operationPlan.target).toEqual({ fileKey: null, requiresExistingFile: true });
+    expect(operationPlan.operationKey).toBe(`figma:${runId}:v1`);
     expect(operationPlan.operations.some((operation) => operation.op === 'create-mobile-variant')).toBe(true);
-    expect(script).toContain('return { success: true, createdNodeIds');
+    expect(script).toContain(`XDB/${runId}/desktop`);
+    expect(script).toContain(`XDB/${runId}/mobile`);
+    expect(script).toContain('figma.root.children.flatMap');
+    expect(script).toContain('figma.loadAllPagesAsync');
+    expect(script).toContain('desktopRoots[0].parent?.id === mobileRoots[0].parent?.id');
+    expect(script).toContain('observedNodeIds: [desktop.id, mobile.id]');
+    expect(script).toContain('The Design Plan is missing a required Figma color token');
     expect(script).toContain('figma.createAutoLayout');
   });
 });

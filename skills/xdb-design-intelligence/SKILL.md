@@ -22,6 +22,7 @@ Use XDB as a traceable design workflow, not as an ungrounded layout generator. P
 6. Treat automatic scores as structural evidence, not human taste. Capture human approval, rejection, revision, or pairwise preference with a reason.
 7. Never mark an external artifact complete when its adapter is disconnected. Preserve the operation plan and report `blocked_external` or `partial`.
 8. Supply a stable, operation-specific `idempotencyKey` to every MCP write tool. Reuse it only when retrying the same payload.
+9. After a Figma write, record the inspected desktop/mobile evidence with `xdb_record_figma_delivery`. Do not mark the run complete from connection status alone.
 
 ## Invariants
 

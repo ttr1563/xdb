@@ -29,17 +29,19 @@ APIを停止した状態でSQLiteとartifactsをversion付きdirectoryへcopyし
 
 - Claude外部実行OFF・未接続・予算不足・timeout・不正出力: `ai_runs`へerror codeと試行回数を記録し、設定で許可されている場合だけlocal plannerへfallbackする。fallbackしたPlanをClaude生成と表示しない。
 - Claude 429・5xx: `maxRetries`回だけexponential backoff後にretryする。timeout、4xx（429以外）、schema不正、network errorは自動retryしない。
-- Figma未接続: `blocked_external`または`partial`。生成したplan/scriptを保持して接続後に再実行する。
+- Figma未接続: `blocked_external`または`partial`。生成したplan/scriptを保持して接続後に明示実行する。
+- Figma外部write: runに固定した`operationKey`とroot名で対象fileの全pageを先に検査する。desktop/mobileが同一pageに一件ずつ存在すれば既存node IDを`observedNodeIds`として回収する。一方だけ、重複、別page、実行結果不明の場合は自動retryしない。
+- Figma完了判定: 両rootのnode ID、created/mutated node ID、構造監査、desktop/mobile screenshot確認が揃い、clipped textとplaceholder textが0の場合だけ`completed`を記録する。同一operationの同一payloadはreplayできるが、異なる証跡や二重完了は拒否する。
 - Image provider未設定: Illustration Specだけを保持し、生成完了とは表示しない。
 - Validation failure: artifactをapprovedにせず`revise`とする。
-- 重複実行: 将来のlive adapterは`tool_runs.idempotency_key`を必須にする。
+- Figma deliveryの重複実行: runに固定した`operationKey`とpayloadを照合し、同一証跡だけをreplayする。別payloadへのkey再利用とrun外operationは409で拒否する。既存file必須をOFFにしたrunは、最初のdeliveryでfile keyをrunへ固定する。
 - MCP writeの重複実行: `mcp_operations`のkeyとrequest hashでreplay／conflictを判定する。owner tokenでlease更新とterminal transitionをfenceする。完了済み結果だけをreplayし、running、期限切れ、failedのkeyではdomain処理を自動再実行しない。
 - MCP writeの結果不明: process停止等でleaseが期限切れになった操作は`operation_outcome_unknown`とする。Request、Plan、Run、評価の保存状態とartifactを照合し、副作用がないと確認できた場合だけ新しいkeyで実行する。
 - MCP process停止: stdio child processだけが停止し、HTTP API・UI・SQLiteの保存データは継続利用できる。
 
 ## Rollback
 
-Application rollbackは、互換migrationを確認した直前commitへ戻し、対応するDB/artifact snapshotを復元します。既に外部Figmaへ適用した変更はGit rollbackでは戻らないため、Figma version historyまたは記録済みnode IDsを用いて別途戻します。
+Application rollbackは、互換migrationを確認した直前commitへ戻し、対応するDB/artifact snapshotを復元します。既に外部Figmaへ適用した変更はGit rollbackでは戻らないため、記録済みfile/root/node IDを照合し、Figma version historyから対象fileを復元します。version historyを確認できない場合はnodeを削除・上書きせず、復旧判断を止めます。
 
 ## Anthropic model lifecycle
 

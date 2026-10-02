@@ -11,6 +11,7 @@ import {
   creationRunInputSchema,
   designRequestInputSchema,
   evaluationInputSchema,
+  figmaDeliveryInputSchema,
   inputHookSchema,
   knowledgeInputSchema,
   planFamilyInputSchema,
@@ -146,6 +147,12 @@ export function buildApp({ repository, config }: AppDependencies): FastifyInstan
     return reply.status(201).send(await service.createArtifacts(input));
   });
 
+  app.get('/api/figma-deliveries', async () => repository.listFigmaDeliveries());
+  app.post('/api/figma-deliveries', async (request, reply) => {
+    const input = figmaDeliveryInputSchema.parse(request.body);
+    return reply.status(201).send(service.recordFigmaDelivery(input));
+  });
+
   app.get('/api/evaluations', async () => repository.listEvaluations());
   app.post('/api/evaluations', async (request, reply) => {
     const input = evaluationInputSchema.parse(request.body);
@@ -160,13 +167,14 @@ export function buildApp({ repository, config }: AppDependencies): FastifyInstan
 
   app.get('/api/export', async () => ({
     exportedAt: new Date().toISOString(),
-    version: 2,
+    version: 3,
     knowledge: repository.listKnowledge(),
     styleProfiles: repository.listStyleProfiles(),
     requests: repository.listRequests(),
     plans: repository.listPlans(),
     aiRuns: repository.listAiRuns(),
     runs: repository.listRuns(),
+    figmaDeliveries: repository.listFigmaDeliveries(),
     evaluations: repository.listEvaluations(),
     comparisons: repository.listComparisons(),
     comparisonContexts: service.listComparisonContexts(),
