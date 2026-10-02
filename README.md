@@ -8,7 +8,7 @@ XDBは、人のデザイン評価を文脈付きナレッジとして蓄積し�
 Design Request
   -> Research retrieval
     -> Design Plan
-      -> Figma plan/script + responsive HTML
+      -> editable Figma delivery + responsive HTML
         -> automatic structural review
           -> human evaluation / pairwise preference
             -> reusable knowledge
@@ -28,7 +28,7 @@ Design Request
 | Research | 評価理由、文脈、コンセプト、出典、利用許可をナレッジとして保存 | 利用可能 |
 | Planning | LocalまたはClaudeで根拠付きDesign Planを生成。Localでは3戦略の比較候補を生成 | Localのみ利用可能 |
 | HTML | semantic／responsiveなstandalone HTMLを生成・比較 | 利用可能 |
-| Figma | operation planと`use_figma`実行scriptを生成 | plan生成まで可能 |
+| Figma | operation plan/scriptを生成し、接続済みagentがnative nodeを作成、検証証跡を保存 | plan生成まで可能 |
 | Illustration | Style Profile、構図、safe area、禁止表現を仕様化 | 仕様生成まで可能 |
 | Evaluation | 自動構造評価、人間評価、候補間比較を分離して保存 | 利用可能 |
 | Export | 全データのJSONと評価履歴のJSONLを出力 | 利用可能 |
@@ -37,7 +37,9 @@ Claude、Figma、画像生成providerは任意です。未接続の機能を実�
 
 ## 現在のFigma境界
 
-XDBはFigma用のoperation planと`use_figma`向け実行scriptを生成します。Figma account、既存file、MCP write接続が設定されていない場合は、runを`partial`または`blocked_external`として記録し、実行済みとは表示しません。接続後、SkillのFigma delivery手順に従って対象fileを調査してからscriptを実行します。
+XDBはFigma用のoperation planと`use_figma`向け実行scriptを生成します。接続済みagentは、Skillの手順に従って対象fileを調査し、Auto Layout、variable、既存componentを使う編集可能なdesktop/mobile frameを作成します。作成・変更node ID、構造監査、desktop/mobile screenshot確認を`FigmaDelivery`として記録できた時点でのみrunを`completed`へ更新します。
+
+Figma account、既存file、write接続がない場合はrunを`partial`または`blocked_external`として保持します。外部writeは自動retryせず、安定した`operationKey`とroot名で既存結果を検出します。同じ操作の同じ証跡はreplayでき、異なる証跡や二重完了は409で拒否します。
 
 ## 導入方法
 
@@ -78,7 +80,7 @@ npm start
 2. プロジェクト名、対象ユーザー、目的、コンセプト、避ける表現を入力する。
 3. Planning AIを`Local | Claude`、出力先を`figma | html | both`から選ぶ。
 4. Researchから関連ナレッジが検索される。Localでは`conservative`、`expressive`、`conversion-led`のPlan Family、Claudeでは単一Planが生成される。
-5. HTML previewまたはFigma operation planを確認する。
+5. HTML previewまたはFigma operation planを確認する。Figma出力では対象file keyを指定し、接続済みagentでdeliveryを実行・検証する。
 6. Evaluateで同じPlan Familyの互換候補を比較し、採否、スコア、比較理由を保存する。
 
 ## Claudeを使う
@@ -132,10 +134,10 @@ codex mcp list
 公開tool：
 
 - read: `xdb_classify_design_input`、`xdb_search_knowledge`、`xdb_get_run_status`
-- write: `xdb_create_request`、`xdb_create_plan`、`xdb_create_plan_family`、`xdb_create_artifacts`、`xdb_record_evaluation`、`xdb_compare_artifacts`
+- write: `xdb_create_request`、`xdb_create_plan`、`xdb_create_plan_family`、`xdb_create_artifacts`、`xdb_record_figma_delivery`、`xdb_record_evaluation`、`xdb_compare_artifacts`
 - resource: `xdb://artifact/{artifactId}`
 
-write toolは8〜128文字の`idempotencyKey`を必須とします。同じkeyとpayloadは完了済みの場合だけ保存結果を返し、別payloadへの再利用は拒否します。実行中、失敗済み、またはprocess停止等で結果不明になったkeyからdomain処理を自動再実行しません。保存状態を照合し、安全を確認した場合だけ新しいkeyで明示的に実行してください。`xdb_create_artifacts`はHTMLとFigma operation planをlocal生成しますが、Figmaへの外部writeは実行しません。
+write toolは8〜128文字の`idempotencyKey`を必須とします。同じkeyとpayloadは完了済みの場合だけ保存結果を返し、別payloadへの再利用は拒否します。実行中、失敗済み、またはprocess停止等で結果不明になったkeyからdomain処理を自動再実行しません。保存状態を照合し、安全を確認した場合だけ新しいkeyで明示的に実行してください。`xdb_create_artifacts`はHTMLとFigma operation planをlocal生成し、外部write後の検証済み証跡は`xdb_record_figma_delivery`で保存します。
 
 CodexのMCP登録形式は[OpenAI公式MCP手順](https://developers.openai.com/learn/docs-mcp)、Claude Codeのproject-scope承認は[Claude Code公式MCP手順](https://code.claude.com/docs/en/mcp)を参照してください。
 
@@ -166,6 +168,7 @@ npm run build
 - `GET /api/export`: 全domain dataのversion付きJSON
 - `GET /api/export/evaluations.jsonl`: 評価履歴のJSONL
 - `GET /api/ai-runs`: AI provider、model、token使用量、latency、試行回数、fallback、error codeの監査履歴
+- `GET/POST /api/figma-deliveries`: Figma外部writeのnode ID、構造監査、screenshot確認、status
 - local stdio MCP: HTTP APIと同じapplication serviceをClaude Code・Codexから呼び出す
 
 外部referenceは公開されているだけでは学習利用可能とみなしません。source、license、capture time、training eligibilityを個別に記録します。

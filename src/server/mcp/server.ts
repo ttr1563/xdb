@@ -9,6 +9,7 @@ import {
   creationRunInputSchema,
   designRequestInputSchema,
   evaluationInputSchema,
+  figmaDeliveryInputSchema,
   inputHookSchema,
   planFamilyInputSchema,
   type Artifact,
@@ -254,6 +255,22 @@ export function createXdbMcpServer({ service, repository }: McpDependencies): Mc
     async ({ idempotencyKey, ...input }) => {
       const operation = await executeIdempotent(repository, 'xdb_record_evaluation', idempotencyKey, input, () =>
         jsonRecord({ evaluation: service.recordEvaluation(input) }),
+      );
+      return textResult(withReplay(operation.result, operation.replayed));
+    },
+  );
+
+  server.registerTool(
+    'xdb_record_figma_delivery',
+    {
+      title: 'Record a Figma delivery result',
+      description: 'Persist Figma node IDs and structural/screenshot evidence after an explicit external write.',
+      inputSchema: figmaDeliveryInputSchema.extend({ idempotencyKey: idempotencyKeySchema }),
+      annotations: writeAnnotations,
+    },
+    async ({ idempotencyKey, ...input }) => {
+      const operation = await executeIdempotent(repository, 'xdb_record_figma_delivery', idempotencyKey, input, () =>
+        jsonRecord({ delivery: service.recordFigmaDelivery(input) }),
       );
       return textResult(withReplay(operation.result, operation.replayed));
     },

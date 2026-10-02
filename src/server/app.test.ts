@@ -5,7 +5,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { CreationRun, DesignPlan, DesignRequest, PlanFamily } from '../shared/contracts.js';
+import type { CreationRun, DesignPlan, DesignRequest, FigmaDelivery, PlanFamily } from '../shared/contracts.js';
 
 import { buildApp } from './app.js';
 import type { RuntimeConfig } from './config.js';
@@ -242,10 +242,18 @@ describe('XDB API workflow', () => {
     expect(planResponse.statusCode).toBe(201);
     const plan = planResponse.json<DesignPlan>();
 
-    const runResponse = await app.inject({
+    const missingTargetResponse = await app.inject({
       method: 'POST',
       url: '/api/runs',
       payload: { planId: plan.id, outputMode: 'both', figmaFileKey: null },
+    });
+    expect(missingTargetResponse.statusCode).toBe(400);
+    expect(missingTargetResponse.json()).toEqual(expect.objectContaining({ error: 'figma_file_required' }));
+
+    const runResponse = await app.inject({
+      method: 'POST',
+      url: '/api/runs',
+      payload: { planId: plan.id, outputMode: 'both', figmaFileKey: 'test-file-key' },
     });
     expect(runResponse.statusCode).toBe(201);
     const run = runResponse.json<CreationRun>();
@@ -256,6 +264,109 @@ describe('XDB API workflow', () => {
 
     const evaluationResponse = await app.inject({ method: 'GET', url: '/api/evaluations' });
     expect(evaluationResponse.json<unknown[]>()).toHaveLength(2);
+    await app.close();
+    database.close();
+  });
+
+  it('records validated Figma delivery evidence and completes the run', async () => {
+    const { app, database } = createTestApp();
+    const requestResponse = await app.inject({
+      method: 'POST',
+      url: '/api/requests',
+      payload: {
+        prompt: '請求書サービスの編集可能なFigmaランディングページをデザインしてください',
+        projectName: 'Figma Delivery',
+        audience: '個人事業主',
+        objective: '無料登録',
+        concepts: ['信頼感'],
+        avoid: [],
+        outputMode: 'figma',
+      },
+    });
+    const designRequest = requestResponse.json<DesignRequest>();
+    const planResponse = await app.inject({
+      method: 'POST',
+      url: '/api/plans',
+      payload: { requestId: designRequest.id },
+    });
+    expect(planResponse.statusCode, planResponse.body).toBe(201);
+    const plan = planResponse.json<DesignPlan>();
+    const runResponse = await app.inject({
+      method: 'POST',
+      url: '/api/runs',
+      payload: { planId: plan.id, outputMode: 'figma', figmaFileKey: 'test-file-key' },
+    });
+    expect(runResponse.statusCode, runResponse.body).toBe(201);
+    const run = runResponse.json<CreationRun>();
+    expect(run.status).toBe('blocked_external');
+    const structure = {
+      nodeCount: 24,
+      textNodeCount: 8,
+      instanceCount: 2,
+      width: 1440,
+      height: 3200,
+      clippedTextCount: 0,
+      placeholderTextCount: 0,
+      imageFillCount: 0,
+    };
+    const deliveryInput = {
+      runId: run.id,
+      operationKey: `figma:${run.id}:v1`,
+      fileKey: 'test-file-key',
+      status: 'completed',
+      pageId: '0:1',
+      desktopNodeId: '10:1',
+      mobileNodeId: '20:1',
+      createdNodeIds: ['10:1', '20:1', 'I10:2;30:4'],
+      mutatedNodeIds: [],
+      desktopStructure: structure,
+      mobileStructure: { ...structure, width: 390, height: 4100 },
+      desktopScreenshotCaptured: true,
+      mobileScreenshotCaptured: true,
+      error: null,
+    };
+    const deliveryResponse = await app.inject({
+      method: 'POST',
+      url: '/api/figma-deliveries',
+      payload: deliveryInput,
+    });
+    expect(deliveryResponse.statusCode).toBe(201);
+    expect(deliveryResponse.json<FigmaDelivery>()).toMatchObject(deliveryInput);
+    const replayResponse = await app.inject({
+      method: 'POST',
+      url: '/api/figma-deliveries',
+      payload: deliveryInput,
+    });
+    expect(replayResponse.json<FigmaDelivery>().id).toBe(deliveryResponse.json<FigmaDelivery>().id);
+    const duplicateCompletionResponse = await app.inject({
+      method: 'POST',
+      url: '/api/figma-deliveries',
+      payload: { ...deliveryInput, operationKey: `figma:${run.id}:v2` },
+    });
+    expect(duplicateCompletionResponse.statusCode).toBe(409);
+    expect(duplicateCompletionResponse.json()).toEqual(expect.objectContaining({
+      error: 'figma_delivery_already_completed',
+    }));
+    const latePartialResponse = await app.inject({
+      method: 'POST',
+      url: '/api/figma-deliveries',
+      payload: {
+        ...deliveryInput,
+        operationKey: `figma:${run.id}:recovery`,
+        status: 'partial',
+        desktopScreenshotCaptured: false,
+        mobileScreenshotCaptured: false,
+        error: 'A late partial result must not downgrade a completed run.',
+      },
+    });
+    expect(latePartialResponse.statusCode).toBe(409);
+    const statusResponse = await app.inject({ method: 'GET', url: `/api/runs` });
+    expect(statusResponse.json<CreationRun[]>()[0]?.status).toBe('completed');
+    const exportResponse = await app.inject({ method: 'GET', url: '/api/export' });
+    expect(exportResponse.json<{ version: number; figmaDeliveries: FigmaDelivery[] }>()).toMatchObject({
+      version: 3,
+      figmaDeliveries: [expect.objectContaining({ runId: run.id, status: 'completed' })],
+    });
     await app.close();
     database.close();
   });

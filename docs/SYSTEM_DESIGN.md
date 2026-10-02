@@ -60,7 +60,7 @@ DesignRequest -> Research retrieval -> DesignPlan
 │ Human / Claude /     │
 │ Codex / future agent │
 └──────────┬───────────┘
-           │ HTTP today / MCP planned
+           │ HTTP / local stdio MCP
            v
 ┌─────────────────────────────────────┐
 │ XDB API                             │
@@ -91,7 +91,7 @@ DesignRequest -> Research retrieval -> DesignPlan
 | Planning | Local Plan生成とprovider routing | `src/server/domain/planner.ts`, `src/server/ai/` |
 | Creation | Planからadapterを実行してartifact化 | `src/server/domain/creation.ts` |
 | HTML adapter | semantic／responsive HTML生成 | `src/server/adapters/html.ts` |
-| Figma adapter | operation planと実行script生成 | `src/server/adapters/figma.ts` |
+| Figma adapter | operation plan/script生成、外部write証跡の検証・保存 | `src/server/adapters/figma.ts`, `src/server/application/xdb-service.ts` |
 | Evaluation | 構造評価と人間評価の保存 | `src/server/domain/evaluation.ts` |
 | Repository | SQLiteへの永続化と取得 | `src/server/db/` |
 | Artifact store | file保存とSHA-256 integrity | `src/server/artifacts/store.ts` |
@@ -114,6 +114,7 @@ Domain層はHTTP、Figma node、Anthropic response shapeへ直接依存させま
 | `Evaluation` | 一成果物への絶対評価 | automaticとhumanを分離 |
 | `PairwiseComparison` | 二候補の比較判断 | preferred artifactはA/Bのどちらか |
 | `AiRun` | Planning provider監査 | provider、model、token、latency、fallback、errorを保持 |
+| `FigmaDelivery` | 外部Figma writeの検証証跡 | operation key、file/root/node ID、構造監査、screenshot確認を保持 |
 | `ToolRun` | 外部adapter実行監査 | idempotency keyとrequest／response／errorを保持 |
 
 ### Relationships
@@ -124,6 +125,7 @@ DesignRequest 1 --- n AiRun
 DesignRequest 1 --- n PairwiseComparison
 DesignPlan    1 --- n CreationRun
 CreationRun   1 --- n Artifact
+CreationRun   1 --- n FigmaDelivery
 Artifact      1 --- n Evaluation
 StyleProfile  1 --- n DesignPlan.illustration
 KnowledgeItem n --- n DesignPlan (knowledgeIds)
@@ -144,7 +146,7 @@ draft -> planned -> generated -> reviewed
 - `generated`: 少なくとも一つのCreation Runを実行済み。partial runの場合もrunの存在を示すため遷移するが、artifact単位の完了判定は別に見る。
 - `reviewed`: 人間評価または比較判断が記録済み。
 
-現在の実装は`draft -> planned -> generated`までを自動更新します。`reviewed`への遷移は、EvaluationからArtifact -> Creation Run -> Design Plan -> Design Requestのlineageを検証して更新する処理と一緒に次フェーズで実装します。
+現在の実装はlineageを検証し、Plan保存、Creation Run実行、人間EvaluationまたはPairwise Comparisonの保存に応じて各状態を自動更新します。
 
 ### Creation Run
 
@@ -207,7 +209,8 @@ Claudeへserver-owned ID、権限、実行成功状態を決めさせません�
 4. ArtifactStoreがfileを書き、SHA-256を算出する。
 5. artifact metadataをDBへ保存する。
 6. 自動構造評価reportを生成する。
-7. adapter結果からrun statusを確定する。
+7. local adapter結果から暫定run statusを確定する。
+8. Figma出力は外部write後に`FigmaDelivery`を検証・保存し、desktop/mobile両方の証跡が揃った場合だけrunを完了する。
 
 外部adapterの実行前にはidempotency keyを確定し、同一操作の二重適用を避けます。
 
@@ -238,6 +241,7 @@ Claudeへserver-owned ID、権限、実行成功状態を決めさせません�
 | `GET/POST /api/plan-families` | Localの複数戦略候補を一つのfamilyとして生成 |
 | `GET /api/ai-runs` | provider実行監査 |
 | `GET/POST /api/runs` | Creation Run取得・実行 |
+| `GET/POST /api/figma-deliveries` | Figma外部write証跡の取得・登録 |
 | `GET/POST /api/evaluations` | 絶対評価取得・登録 |
 | `GET/POST /api/comparisons` | 比較評価取得・登録 |
 | `GET /api/export` | version付き全domain export |
@@ -257,6 +261,7 @@ MCPは新しい正本やbusiness logicを持たず、HTTPと同じ`XdbService`�
 - `xdb_create_plan`
 - `xdb_create_plan_family`
 - `xdb_create_artifacts`
+- `xdb_record_figma_delivery`
 - `xdb_record_evaluation`
 - `xdb_compare_artifacts`
 - `xdb_get_run_status`
@@ -285,6 +290,9 @@ domain writeとoperation完了記録の間でprocessが停止すると結果は�
 - Auto Layoutとvariable bindingを優先する。
 - desktop 1440pxとmobile 390pxを生成・検証する。
 - 作成・変更node IDを返し、screenshotとstructural inspectionで検証する。
+- `operationKey`とdesktop/mobile root名を安定化し、再実行時は既存rootを検出する。片方だけ存在する場合は自動継続せずpartialとして記録する。
+- 完了には両root、構造監査、両screenshot確認、clipped text／placeholder textが0であることを要求する。
+- 同一operationの同一証跡はreplayし、異なる証跡または別operationによる二重完了は拒否する。
 - 未接続時はoperation planとscriptを残し、実行済みとは表示しない。
 
 ### Illustration
@@ -316,7 +324,7 @@ DesignRequest
 ### Current
 
 - SQLite: relation、status、score、provenance、audit。
-- Filesystem: HTML、JSON、Figma script、report。
+- Filesystem: HTML、JSON、Figma script、report。Figma node証跡はSQLiteの`figma_deliveries`へ保存する。
 - SHA-256: artifact integrity。
 - `schema_migrations`: transaction単位のforward migration。
 
@@ -378,6 +386,7 @@ retryはidempotentなPlanning read／generationに限定し、Figma writeを自�
 | HTML generation failure | artifactを保存しない | run failed |
 | Figma未接続 | plan/scriptだけ保存 | partial／blocked_external |
 | Figma途中失敗 | node IDsとerrorを記録 | retry前にtarget inspection |
+| Figma完了の重複登録 | 既存deliveryを照合し、異なるoperationは拒否 | 409 conflict |
 | Image provider未接続 | Illustration Specだけ保存 | generated imageと表示しない |
 | Artifact hash mismatch | preview／exportを停止 | integrity error |
 | DB migration failure | transaction rollback | process start failure |
@@ -413,6 +422,7 @@ prompt本文やcredentialをmetric labelへ含めません。個人運用段階�
 - Claude未接続fallbackとAiRun audit。
 - migration from previous schema version。
 - output adapter disabled／missing target failure。
+- Figma delivery replay、二重完了拒否、compound instance node ID。
 - JSON／JSONL export compatibility。
 
 ### Browser

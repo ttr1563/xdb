@@ -9,6 +9,7 @@ import type {
   DesignPlan,
   DesignRequest,
   Evaluation,
+  FigmaDelivery,
   KnowledgeItem,
   OutputMode,
   ScoreSet,
@@ -42,6 +43,7 @@ interface AppData {
   evaluations: Evaluation[];
   styles: StyleProfile[];
   aiRuns: AiRun[];
+  figmaDeliveries: FigmaDelivery[];
 }
 
 const emptySummary: DashboardSummary = {
@@ -80,6 +82,9 @@ function EmptyState({ children }: { children: string }) {
 
 function Overview({ data, onNavigate }: { data: AppData; onNavigate: (view: View) => void }) {
   const latestRun = data.runs[0];
+  const latestFigmaDelivery = latestRun
+    ? data.figmaDeliveries.find((delivery) => delivery.runId === latestRun.id && delivery.status === 'completed')
+    : undefined;
   return (
     <div className="view-stack">
       <section className="intro-panel">
@@ -123,6 +128,7 @@ function Overview({ data, onNavigate }: { data: AppData; onNavigate: (view: View
               <p>{latestRun.summary}</p>
               <div className="artifact-links">
                 {latestRun.artifacts.map((artifact) => <a href={`/artifacts/${artifact.path}`} target="_blank" rel="noreferrer" key={artifact.id}>{artifact.kind} ↗</a>)}
+                {latestFigmaDelivery && <a href={`https://www.figma.com/design/${latestFigmaDelivery.fileKey}`} target="_blank" rel="noreferrer">Figma design ↗</a>}
               </div>
             </div>
           ) : <EmptyState>まだ生成履歴がありません。</EmptyState>}
@@ -150,6 +156,9 @@ function CreateStudio({ data, refresh }: { data: AppData; refresh: () => Promise
     setBusy(true);
     setMessage(null);
     const form = new FormData(event.currentTarget);
+    const figmaFileKey = mode === 'figma' || mode === 'both'
+      ? String(form.get('figmaFileKey') ?? '').trim() || null
+      : null;
     try {
       const request = await api<DesignRequest>('/api/requests', {
         method: 'POST',
@@ -171,7 +180,7 @@ function CreateStudio({ data, refresh }: { data: AppData; refresh: () => Promise
         for (const plan of result.plans) {
           await api<CreationRun>('/api/runs', {
             method: 'POST',
-            body: JSON.stringify({ planId: plan.id, outputMode: mode, figmaFileKey: null }),
+            body: JSON.stringify({ planId: plan.id, outputMode: mode, figmaFileKey }),
           });
         }
         setMessage(`${result.plans.length}件の比較候補を生成しました。Evaluateで比較できます。`);
@@ -182,7 +191,7 @@ function CreateStudio({ data, refresh }: { data: AppData; refresh: () => Promise
         });
         const run = await api<CreationRun>('/api/runs', {
           method: 'POST',
-          body: JSON.stringify({ planId: plan.id, outputMode: mode, figmaFileKey: null }),
+          body: JSON.stringify({ planId: plan.id, outputMode: mode, figmaFileKey }),
         });
         setMessage(run.summary);
       }
@@ -205,6 +214,7 @@ function CreateStudio({ data, refresh }: { data: AppData; refresh: () => Promise
         <form className="panel form-panel" onSubmit={(event) => void submit(event)}>
           <div className="field-row"><label>プロジェクト名<input name="projectName" defaultValue="Invoice Flow" required minLength={2} /></label><label>出力先<div className="segmented">{(['figma', 'html', 'both'] as const).map((value) => <button type="button" className={mode === value ? 'active' : ''} onClick={() => setMode(value)} key={value}>{value}</button>)}</div></label></div>
           <label>Planning AI<div className="segmented">{(['local', 'anthropic'] as const).filter((value) => data.config.design.ai.providers[value].enabled).map((value) => <button type="button" className={provider === value ? 'active' : ''} onClick={() => setProvider(value)} key={value}>{value === 'anthropic' ? 'Claude' : 'Local'}</button>)}</div><small>{anthropicStatus}</small></label>
+          {(mode === 'figma' || mode === 'both') && <label>Figma file key <small>Figma Design URLの`/design/`直後の値。外部writeは生成後に明示実行します。</small><input name="figmaFileKey" placeholder="RkB6IUKpm4oXF4zUkSYveg" required={data.config.design.figma.requireExistingFile} /></label>}
           <label>要望<textarea name="prompt" defaultValue="個人事業主向け請求書サービスのLPをデザインして。信頼感は必要だが堅すぎず、Heroには一貫したイラストを使いたい。" required minLength={12} rows={5} /></label>
           <div className="field-row"><label>対象ユーザー<input name="audience" defaultValue="ITに詳しくない個人事業主" required /></label><label>主要目的<input name="objective" defaultValue="無料登録への誘導" required /></label></div>
           <div className="field-row"><label>コンセプト <small>カンマ区切り</small><input name="concepts" defaultValue="信頼感, 親しみ, 簡単さ" required /></label><label>避ける表現 <small>カンマ区切り</small><input name="avoid" defaultValue="派手なグラデーション, 過度な3D, 情報過多" /></label></div>
@@ -326,16 +336,17 @@ export function App() {
     evaluations: [],
     styles: [],
     aiRuns: [],
+    figmaDeliveries: [],
   });
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
-      const [config, summary, knowledge, requests, plans, runs, evaluations, styles, aiRuns] = await Promise.all([
-        api<PublicConfig>('/api/config'), api<DashboardSummary>('/api/dashboard'), api<KnowledgeItem[]>('/api/knowledge'), api<DesignRequest[]>('/api/requests'), api<DesignPlan[]>('/api/plans'), api<CreationRun[]>('/api/runs'), api<Evaluation[]>('/api/evaluations'), api<StyleProfile[]>('/api/style-profiles'), api<AiRun[]>('/api/ai-runs'),
+      const [config, summary, knowledge, requests, plans, runs, evaluations, styles, aiRuns, figmaDeliveries] = await Promise.all([
+        api<PublicConfig>('/api/config'), api<DashboardSummary>('/api/dashboard'), api<KnowledgeItem[]>('/api/knowledge'), api<DesignRequest[]>('/api/requests'), api<DesignPlan[]>('/api/plans'), api<CreationRun[]>('/api/runs'), api<Evaluation[]>('/api/evaluations'), api<StyleProfile[]>('/api/style-profiles'), api<AiRun[]>('/api/ai-runs'), api<FigmaDelivery[]>('/api/figma-deliveries'),
       ]);
-      setData({ config, summary, knowledge, requests, plans, runs, evaluations, styles, aiRuns });
+      setData({ config, summary, knowledge, requests, plans, runs, evaluations, styles, aiRuns, figmaDeliveries });
       setError(null);
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'データを取得できません。'); } finally { setLoading(false); }
   }, []);
