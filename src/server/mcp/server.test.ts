@@ -91,8 +91,11 @@ describe('XDB MCP facade', () => {
         'xdb_get_dataset_snapshot',
         'xdb_get_run_status',
         'xdb_import_knowledge',
+        'xdb_list_request_references',
         'xdb_record_evaluation',
         'xdb_record_figma_delivery',
+        'xdb_record_reference_analysis',
+        'xdb_review_request_reference',
         'xdb_search_knowledge',
         'xdb_update_knowledge_lifecycle',
       ]);
@@ -150,6 +153,11 @@ describe('XDB MCP facade', () => {
         objective: '無料登録',
         concepts: ['信頼感'],
         avoid: ['過度な3D'],
+        references: [{
+          url: 'https://example.com/invoice-design#hero',
+          role: 'inspiration',
+          note: 'Heroの情報階層を調査する',
+        }],
         outputMode: 'html',
       };
       const created = await client.callTool({ name: 'xdb_create_request', arguments: requestArguments });
@@ -168,6 +176,79 @@ describe('XDB MCP facade', () => {
       });
       expect(conflict.isError).toBe(true);
       expect(repository.listRequests()).toHaveLength(1);
+
+      const listedReferences = await client.callTool({
+        name: 'xdb_list_request_references',
+        arguments: { requestId: request.id },
+      });
+      const references = asRecord(listedReferences.structuredContent).references as Array<Record<string, unknown>>;
+      expect(references).toEqual([
+        expect.objectContaining({ url: 'https://example.com/invoice-design', status: 'pending' }),
+      ]);
+      const referenceId = String(references[0]?.id);
+      const analyzed = await client.callTool({
+        name: 'xdb_record_reference_analysis',
+        arguments: {
+          referenceId,
+          title: '請求サービスHeroの情報階層',
+          summary: '価値提案と主要CTAを近接させ、補助情報との階層を明確にしている。',
+          contexts: ['landing-page', 'hero'],
+          concepts: ['clarity', 'trustworthy'],
+          strengths: ['価値提案から主要行動への流れが明確である。'],
+          risks: ['自社の根拠情報を別途検証する必要がある。'],
+          evidence: '許可されたMCPクライアントによる目視分析。',
+          license: null,
+          rightsStatus: 'unverified',
+          trainingEligible: false,
+          idempotencyKey: 'reference-analysis:invoice-flow:1',
+        },
+      });
+      expect(asRecord(asRecord(analyzed.structuredContent).reference).status).toBe('analyzed');
+      const analyzedReplay = await client.callTool({
+        name: 'xdb_record_reference_analysis',
+        arguments: {
+          referenceId,
+          title: '請求サービスHeroの情報階層',
+          summary: '価値提案と主要CTAを近接させ、補助情報との階層を明確にしている。',
+          contexts: ['landing-page', 'hero'],
+          concepts: ['clarity', 'trustworthy'],
+          strengths: ['価値提案から主要行動への流れが明確である。'],
+          risks: ['自社の根拠情報を別途検証する必要がある。'],
+          evidence: '許可されたMCPクライアントによる目視分析。',
+          license: null,
+          rightsStatus: 'unverified',
+          trainingEligible: false,
+          idempotencyKey: 'reference-analysis:invoice-flow:1',
+        },
+      });
+      expect(asRecord(analyzedReplay.structuredContent).replayed).toBe(true);
+      const reviewed = await client.callTool({
+        name: 'xdb_review_request_reference',
+        arguments: {
+          referenceId,
+          decision: 'approved',
+          reason: '設計時の参考ナレッジとして採用する。',
+          idempotencyKey: 'reference-review:invoice-flow:1',
+        },
+      });
+      const approvedReference = asRecord(asRecord(reviewed.structuredContent).reference);
+      expect(approvedReference.status).toBe('approved');
+      const reviewedReplay = await client.callTool({
+        name: 'xdb_review_request_reference',
+        arguments: {
+          referenceId,
+          decision: 'approved',
+          reason: '設計時の参考ナレッジとして採用する。',
+          idempotencyKey: 'reference-review:invoice-flow:1',
+        },
+      });
+      expect(asRecord(reviewedReplay.structuredContent).replayed).toBe(true);
+      const searchResult = await client.callTool({
+        name: 'xdb_search_knowledge',
+        arguments: { requestId: request.id },
+      });
+      const rankedItems = asRecord(searchResult.structuredContent).items as Array<Record<string, unknown>>;
+      expect(rankedItems[0]?.id).toBe(approvedReference.knowledgeId);
 
       const familyResult = await client.callTool({
         name: 'xdb_create_plan_family',

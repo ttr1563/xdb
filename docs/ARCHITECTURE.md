@@ -15,7 +15,7 @@ Input Hook -> Research -> Planning -> Creation -> Evaluation
 
 ### Research
 
-`KnowledgeItem`は、見た目のreferenceだけでなくcontexts、concepts、evidence、provenance、権利状態、lifecycle、重複lineageを持ちます。context aliasはcanonical taxonomyへ正規化し、metadata SHA-256と画像のexact／perceptual hashで重複を識別します。検索はactiveな非重複データだけを対象に、入力文、対象、目的、concept、avoid条件の一致を使う決定的な初期rankingです。学習用snapshotはさらに権利確認済みかつ学習利用可のデータへ限定します。将来のlearning-to-rankは同じidentifierとcomparison labelを利用します。
+`KnowledgeItem`は、見た目のreferenceだけでなくcontexts、concepts、evidence、provenance、権利状態、lifecycle、重複lineageを持ちます。Design Requestの参考URLは`RequestReference`として隔離し、許可されたclientによる構造化分析と人間の承認を経たものだけをKnowledgeへ変換します。context aliasはcanonical taxonomyへ正規化し、metadata SHA-256と画像のexact／perceptual hashで重複を識別します。検索はactiveな非重複データだけを対象に、承認済みのrequest固有referenceを優先し、その後に入力文、対象、目的、concept、avoid条件の一致を使う決定的な初期rankingです。学習用snapshotはさらに権利確認済みかつ学習利用可のデータへ限定します。将来のlearning-to-rankは同じidentifierとcomparison labelを利用します。
 
 ### Planning
 
@@ -64,4 +64,5 @@ DBは`schema_migrations`でversion管理します。migrationはtransaction内�
 - `.env`のsecretをartifact、DB、logへ保存しない。
 - external writeはadapterの接続状態とtarget authorizationを確認する。
 - source/license未確認referenceは`trainingEligible: false`。
+- XDB serverはDesign Requestへ入力された任意URLを取得しない。内容確認は利用者が許可したresearch clientの境界で行う。
 - public deploymentは本設計の範囲外。認証なしで公開しない。

@@ -7,7 +7,15 @@ import { describe, expect, it } from 'vitest';
 
 import { openDatabase } from './database.js';
 
+function removeRequestReferenceSchema(database: ReturnType<typeof openDatabase>): void {
+  database.exec(`
+    DROP TABLE request_references;
+    DELETE FROM schema_migrations WHERE version = 10;
+  `);
+}
+
 function removeResearchSchema(database: ReturnType<typeof openDatabase>): void {
+  removeRequestReferenceSchema(database);
   database.exec(`
     DROP TABLE reference_assets;
     DROP TABLE context_aliases;
@@ -62,7 +70,7 @@ describe('database migrations', () => {
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ai_runs'")
         .get() as { name: string } | undefined;
       const columns = upgraded.prepare('PRAGMA table_info(ai_runs)').all() as Array<{ name: string }>;
-      expect(version.version).toBe(9);
+      expect(version.version).toBe(10);
       expect(table?.name).toBe('ai_runs');
       expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(['error_code', 'attempt_count']));
       upgraded.close();
@@ -89,7 +97,7 @@ describe('database migrations', () => {
       const upgraded = openDatabase(databasePath);
       const columns = upgraded.prepare('PRAGMA table_info(ai_runs)').all() as Array<{ name: string }>;
       expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(['error_code', 'attempt_count']));
-      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(9);
+      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(10);
       upgraded.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });
@@ -112,7 +120,7 @@ describe('database migrations', () => {
       expect(table?.name).toBe('mcp_operations');
       const columns = upgraded.prepare('PRAGMA table_info(mcp_operations)').all() as Array<{ name: string }>;
       expect(columns.map((column) => column.name)).toContain('owner_token');
-      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(9);
+      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(10);
       upgraded.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });
@@ -131,7 +139,7 @@ describe('database migrations', () => {
       const upgraded = openDatabase(databasePath);
       const columns = upgraded.prepare('PRAGMA table_info(mcp_operations)').all() as Array<{ name: string }>;
       expect(columns.map((column) => column.name)).toContain('owner_token');
-      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(9);
+      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(10);
       upgraded.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });
@@ -195,7 +203,7 @@ describe('database migrations', () => {
         provider: 'anthropic',
       });
       expect(String(migrated.fingerprint)).toHaveLength(64);
-      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(9);
+      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(10);
       upgraded.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });
@@ -216,7 +224,7 @@ describe('database migrations', () => {
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'figma_deliveries'",
       ).get() as { name: string } | undefined;
       expect(table?.name).toBe('figma_deliveries');
-      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(9);
+      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(10);
       upgraded.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });
@@ -235,7 +243,7 @@ describe('database migrations', () => {
       const upgraded = openDatabase(databasePath);
       const columns = upgraded.prepare('PRAGMA table_info(figma_deliveries)').all() as Array<{ name: string }>;
       expect(columns.map((column) => column.name)).toContain('observed_node_ids_json');
-      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(9);
+      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(10);
       upgraded.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });
@@ -300,7 +308,47 @@ describe('database migrations', () => {
       expect(JSON.parse(humanRow.provenance_json)).toEqual(expect.objectContaining({
         rightsStatus: 'unverified', trainingEligible: false,
       }));
-      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(9);
+      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(10);
+      upgraded.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('adds request references to a version 9 database without losing requests', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'xdb-migration-'));
+    const databasePath = path.join(directory, 'xdb.sqlite');
+    try {
+      const initial = openDatabase(databasePath);
+      removeRequestReferenceSchema(initial);
+      const requestId = randomUUID();
+      initial.prepare(`
+        INSERT INTO design_requests (
+          id, prompt, project_name, audience, objective, concepts_json, avoid_json,
+          output_mode, intent, status, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        requestId,
+        '既存リクエストを維持する',
+        'Migration check',
+        '開発者',
+        '移行確認',
+        '[]',
+        '[]',
+        'html',
+        'create-design',
+        'draft',
+        '2026-10-06T00:00:00.000Z',
+      );
+      initial.close();
+
+      const upgraded = openDatabase(databasePath);
+      expect((upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version).toBe(10);
+      expect(upgraded.prepare('SELECT id FROM design_requests WHERE id = ?').get(requestId)).toEqual({ id: requestId });
+      const columns = upgraded.prepare('PRAGMA table_info(request_references)').all() as Array<{ name: string }>;
+      expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining([
+        'request_id', 'url', 'role', 'status', 'analysis_json', 'knowledge_id',
+      ]));
       upgraded.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });

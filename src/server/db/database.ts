@@ -283,6 +283,27 @@ const migrationNine = `
   CREATE INDEX idx_reference_assets_perceptual ON reference_assets(perceptual_hash);
 `;
 
+const migrationTen = `
+  CREATE TABLE request_references (
+    id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL REFERENCES design_requests(id) ON DELETE CASCADE,
+    url TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('inspiration', 'competitor', 'avoid', 'existing')),
+    note TEXT,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'analyzed', 'approved', 'rejected', 'unavailable')),
+    analysis_json TEXT,
+    decision_reason TEXT,
+    knowledge_id TEXT REFERENCES knowledge_items(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (request_id, url)
+  );
+
+  CREATE INDEX idx_request_references_request ON request_references(request_id, created_at);
+  CREATE INDEX idx_request_references_status ON request_references(status, created_at);
+  CREATE INDEX idx_request_references_knowledge ON request_references(knowledge_id);
+`;
+
 export function openDatabase(databasePath: string): Database.Database {
   mkdirSync(path.dirname(databasePath), { recursive: true });
   const database = new Database(databasePath);
@@ -501,6 +522,20 @@ export function openDatabase(databasePath: string): Database.Database {
       database
         .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
         .run(9, new Date().toISOString());
+      database.exec('COMMIT;');
+    } catch (error) {
+      database.exec('ROLLBACK;');
+      throw error;
+    }
+  }
+
+  if (currentVersion < 10) {
+    database.exec('BEGIN IMMEDIATE;');
+    try {
+      database.exec(migrationTen);
+      database
+        .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
+        .run(10, new Date().toISOString());
       database.exec('COMMIT;');
     } catch (error) {
       database.exec('ROLLBACK;');

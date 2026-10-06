@@ -195,6 +195,72 @@ export interface ReferenceAsset {
   createdAt: string;
 }
 
+export const requestReferenceRoleSchema = z.enum(['inspiration', 'competitor', 'avoid', 'existing']);
+export type RequestReferenceRole = z.infer<typeof requestReferenceRoleSchema>;
+
+export const requestReferenceStatusSchema = z.enum(['pending', 'analyzed', 'approved', 'rejected', 'unavailable']);
+export type RequestReferenceStatus = z.infer<typeof requestReferenceStatusSchema>;
+
+export function canonicalReferenceUrl(value: string): string {
+  const url = new URL(value);
+  url.hash = '';
+  return url.href;
+}
+
+export const requestReferenceInputSchema = z.object({
+  url: z.string().url().max(2_000).superRefine((value, context) => {
+    const parsed = new URL(value);
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      context.addIssue({ code: 'custom', message: 'Reference URLs must use HTTP or HTTPS.' });
+    }
+    if (parsed.username || parsed.password) {
+      context.addIssue({ code: 'custom', message: 'Reference URLs must not contain credentials.' });
+    }
+  }),
+  role: requestReferenceRoleSchema.default('inspiration'),
+  note: z.string().trim().min(1).max(500).nullable().default(null),
+});
+export type RequestReferenceInput = z.infer<typeof requestReferenceInputSchema>;
+
+export const requestReferenceAnalysisInputSchema = z.object({
+  title: z.string().trim().min(2).max(140),
+  summary: z.string().trim().min(8).max(2_000),
+  contexts: z.array(z.string().trim().min(1).max(80)).min(1).max(20),
+  concepts: z.array(z.string().trim().min(1).max(80)).min(1).max(20),
+  strengths: z.array(z.string().trim().min(2).max(300)).min(1).max(12),
+  risks: z.array(z.string().trim().min(2).max(300)).max(12).default([]),
+  evidence: z.string().trim().min(4).max(2_000),
+  license: z.string().trim().min(1).max(500).nullable().default(null),
+  rightsStatus: z.enum(['unverified', 'verified', 'prohibited']),
+  trainingEligible: z.boolean().default(false),
+}).superRefine((value, context) => {
+  if (value.rightsStatus === 'verified' && value.license === null) {
+    context.addIssue({ code: 'custom', path: ['license'], message: 'Verified references require a license.' });
+  }
+  if (value.trainingEligible && value.rightsStatus !== 'verified') {
+    context.addIssue({ code: 'custom', path: ['trainingEligible'], message: 'Training eligibility requires verified rights.' });
+  }
+});
+export type RequestReferenceAnalysisInput = z.infer<typeof requestReferenceAnalysisInputSchema>;
+
+export const requestReferenceReviewInputSchema = z.object({
+  decision: z.enum(['approved', 'rejected', 'unavailable']),
+  reason: z.string().trim().min(4).max(500),
+});
+export type RequestReferenceReviewInput = z.infer<typeof requestReferenceReviewInputSchema>;
+
+export const requestReferenceSchema = requestReferenceInputSchema.extend({
+  id: z.string().uuid(),
+  requestId: z.string().uuid(),
+  status: requestReferenceStatusSchema,
+  analysis: requestReferenceAnalysisInputSchema.nullable(),
+  decisionReason: z.string().nullable(),
+  knowledgeId: z.string().uuid().nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export type RequestReference = z.infer<typeof requestReferenceSchema>;
+
 export const designRequestInputSchema = z.object({
   prompt: z.string().min(12).max(8_000),
   projectName: z.string().min(2).max(120),
@@ -202,11 +268,18 @@ export const designRequestInputSchema = z.object({
   objective: z.string().min(2).max(500),
   concepts: z.array(z.string().min(1).max(80)).min(1).max(12),
   avoid: z.array(z.string().min(1).max(120)).max(12).default([]),
+  references: z.array(requestReferenceInputSchema).max(12).default([]).superRefine((references, context) => {
+    const urls = references.map((reference) => canonicalReferenceUrl(reference.url));
+    if (new Set(urls).size !== urls.length) {
+      context.addIssue({ code: 'custom', message: 'Reference URLs must be unique within a request.' });
+    }
+  }),
   outputMode: outputModeSchema,
 });
 export type DesignRequestInput = z.infer<typeof designRequestInputSchema>;
 
-export const designRequestSchema = designRequestInputSchema.extend({
+export const designRequestSchema = designRequestInputSchema.omit({ references: true }).extend({
+  references: z.array(requestReferenceSchema),
   id: z.string().uuid(),
   intent: designIntentSchema.exclude(['non-design']),
   status: z.enum(['draft', 'planned', 'generated', 'reviewed']),

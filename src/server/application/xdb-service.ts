@@ -23,6 +23,9 @@ import type {
   PlanFamily,
   PlanFamilyInput,
   ReferenceAsset,
+  RequestReference,
+  RequestReferenceAnalysisInput,
+  RequestReferenceReviewInput,
 } from '../../shared/contracts.js';
 import { knowledgeInputSchema } from '../../shared/contracts.js';
 import { generateDesignPlan } from '../ai/planning.js';
@@ -77,7 +80,71 @@ export class XdbService {
 
   public searchKnowledge(requestId: string): KnowledgeItem[] {
     const request = this.requireRequest(requestId);
-    return rankKnowledge(request, this.dependencies.repository.listRetrievableKnowledge());
+    const items = this.dependencies.repository.listRetrievableKnowledge();
+    const linkedIds = new Set(request.references
+      .filter((reference) => reference.status === 'approved' && reference.knowledgeId !== null)
+      .map((reference) => reference.knowledgeId));
+    const linked = items.filter((item) => linkedIds.has(item.id));
+    const linkedItemIds = new Set(linked.map((item) => item.id));
+    return [...linked, ...rankKnowledge(request, items).filter((item) => !linkedItemIds.has(item.id))].slice(0, 6);
+  }
+
+  public recordRequestReferenceAnalysis(
+    id: string,
+    input: RequestReferenceAnalysisInput,
+  ): RequestReference {
+    const reference = this.dependencies.repository.getRequestReference(id);
+    if (!reference) throw new ApplicationError('request_reference_not_found', 404, 'The request reference was not found.');
+    if (!['pending', 'analyzed'].includes(reference.status)) {
+      throw new ApplicationError('request_reference_finalized', 409, 'Finalized request references cannot be analyzed.');
+    }
+    const updated = this.dependencies.repository.recordRequestReferenceAnalysis(id, input);
+    if (!updated) throw new ApplicationError('request_reference_conflict', 409, 'The request reference status changed.');
+    return updated;
+  }
+
+  public reviewRequestReference(id: string, input: RequestReferenceReviewInput): RequestReference {
+    const reference = this.dependencies.repository.getRequestReference(id);
+    if (!reference) throw new ApplicationError('request_reference_not_found', 404, 'The request reference was not found.');
+    if (!['pending', 'analyzed'].includes(reference.status)) {
+      throw new ApplicationError('request_reference_finalized', 409, 'The request reference already has a final decision.');
+    }
+    if (input.decision === 'approved') {
+      if (reference.status !== 'analyzed' || !reference.analysis) {
+        throw new ApplicationError('request_reference_not_analyzed', 409, 'Analyze the reference before approval.');
+      }
+      const analysis = reference.analysis;
+      const evidence = [analysis.evidence, ...analysis.strengths, ...analysis.risks.map((risk) => `Risk: ${risk}`)]
+        .join('\n')
+        .slice(0, 2_000);
+      const knowledgeInput = knowledgeInputSchema.parse({
+        title: analysis.title,
+        summary: analysis.summary,
+        kind: reference.role === 'avoid' ? 'anti-pattern' : 'reference',
+        contexts: analysis.contexts,
+        concepts: analysis.concepts,
+        evidence,
+        provenance: {
+          sourceType: 'url',
+          sourceUri: reference.url,
+          license: analysis.license,
+          rightsStatus: analysis.rightsStatus,
+          trainingEligible: analysis.trainingEligible,
+          capturedAt: new Date().toISOString(),
+        },
+      });
+      const updated = this.dependencies.repository.approveRequestReference(id, input.reason, knowledgeInput);
+      if (!updated) throw new ApplicationError('request_reference_conflict', 409, 'The request reference status changed.');
+      return updated;
+    }
+    const updated = this.dependencies.repository.reviewRequestReference(
+      id,
+      input.decision,
+      input.reason,
+      null,
+    );
+    if (!updated) throw new ApplicationError('request_reference_conflict', 409, 'The request reference status changed.');
+    return updated;
   }
 
   public createKnowledge(input: KnowledgeInput): KnowledgeItem {
@@ -256,6 +323,7 @@ export class XdbService {
 
   public async createPlan(requestId: string, provider: AiProvider): Promise<DesignPlan> {
     const request = this.requireRequest(requestId);
+    this.assertRequestReferencesFinalized(request);
     const providerConfig = this.dependencies.config.design.ai.providers[provider];
     if (!providerConfig.enabled) {
       throw new ApplicationError(`${provider}_ai_provider_disabled`, 409, `${provider} AI provider is disabled.`);
@@ -278,6 +346,7 @@ export class XdbService {
       throw new ApplicationError('local_ai_provider_disabled', 409, 'local AI provider is disabled.');
     }
     const request = this.requireRequest(input.requestId);
+    this.assertRequestReferencesFinalized(request);
     const styleProfile = this.dependencies.repository.listStyleProfiles()[0];
     if (!styleProfile) throw new ApplicationError('style_profile_required', 409, 'A Style Profile is required.');
     const family: PlanFamily = {
@@ -465,5 +534,19 @@ export class XdbService {
     const request = this.dependencies.repository.getRequest(requestId);
     if (!request) throw new ApplicationError('request_not_found', 404, 'The Design Request was not found.');
     return request;
+  }
+
+  private assertRequestReferencesFinalized(request: DesignRequest): void {
+    const unresolved = request.references.filter((reference) =>
+      reference.status === 'pending' || reference.status === 'analyzed',
+    );
+    if (unresolved.length > 0) {
+      throw new ApplicationError(
+        'request_research_pending',
+        409,
+        'Finalize every request reference before planning.',
+        { referenceIds: unresolved.map((reference) => reference.id) },
+      );
+    }
   }
 }

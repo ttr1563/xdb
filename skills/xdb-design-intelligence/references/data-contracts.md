@@ -12,6 +12,14 @@ DesignRequest
         -> Evaluation / PairwiseComparison
 ```
 
+An optional research lineage branches before planning:
+
+```text
+DesignRequest -> RequestReference -> approved KnowledgeItem -> DesignPlan
+```
+
+`RequestReference` stores a canonical HTTP(S) URL, role (`inspiration | competitor | avoid | existing`), optional note, analysis, final decision, and optional Knowledge ID. Its state is `pending → analyzed → approved | rejected | unavailable`. Approval requires analysis; final states are not edited in place. An approved `avoid` reference becomes an anti-pattern. XDB itself does not fetch the URL.
+
 Keep these identifiers stable when exporting or importing records. Store timestamps as ISO 8601 UTC strings.
 
 ## Knowledge

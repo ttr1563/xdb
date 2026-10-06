@@ -19,6 +19,8 @@ import {
   knowledgeInputSchema,
   knowledgeLifecycleInputSchema,
   planFamilyInputSchema,
+  requestReferenceAnalysisInputSchema,
+  requestReferenceReviewInputSchema,
   styleProfileInputSchema,
   type DashboardSummary,
 } from '../shared/contracts.js';
@@ -163,6 +165,20 @@ export function buildApp({ repository, config }: AppDependencies): FastifyInstan
     const input = designRequestInputSchema.parse(request.body);
     return reply.status(201).send(service.createRequest(input));
   });
+  app.get('/api/request-references', async (request) => {
+    const { requestId } = request.query as { requestId?: string };
+    return repository.listRequestReferences(requestId);
+  });
+  app.post('/api/request-references/:id/analysis', async (request) => {
+    const { id } = request.params as { id: string };
+    const input = requestReferenceAnalysisInputSchema.parse(request.body);
+    return service.recordRequestReferenceAnalysis(id, input);
+  });
+  app.post('/api/request-references/:id/review', async (request) => {
+    const { id } = request.params as { id: string };
+    const input = requestReferenceReviewInputSchema.parse(request.body);
+    return service.reviewRequestReference(id, input);
+  });
 
   app.get('/api/plans', async () => repository.listPlans());
   app.post('/api/plans', async (request, reply) => {
@@ -208,13 +224,14 @@ export function buildApp({ repository, config }: AppDependencies): FastifyInstan
 
   app.get('/api/export', async () => ({
     exportedAt: new Date().toISOString(),
-    version: 4,
+    version: 5,
     knowledge: repository.listKnowledge(),
     knowledgeImportBatches: repository.listKnowledgeImportBatches(),
     contextTaxonomy: repository.listContextTaxonomy(),
     referenceAssets: repository.listReferenceAssets(),
     styleProfiles: repository.listStyleProfiles(),
     requests: repository.listRequests(),
+    requestReferences: repository.listRequestReferences(),
     plans: repository.listPlans(),
     aiRuns: repository.listAiRuns(),
     runs: repository.listRuns(),

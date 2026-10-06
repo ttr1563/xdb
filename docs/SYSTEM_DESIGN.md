@@ -106,6 +106,7 @@ Domain層はHTTP、Figma node、Anthropic response shapeへ直接依存させま
 | Entity | Role | Important invariants |
 | --- | --- | --- |
 | `DesignRequest` | 人間の要望と生成条件 | audience、objective、concepts、avoid、output modeを必須化 |
+| `RequestReference` | 依頼固有の参考URLと調査queue | URL、role、analysis、human decision、Knowledge lineageを保持 |
 | `KnowledgeItem` | 再利用可能な判断根拠 | provenance、rights、lifecycle、fingerprint、duplicate lineageを保持 |
 | `ContextTaxonomyTerm` | retrieval文脈の正規語彙 | canonicalとaliasを一意に対応付ける |
 | `KnowledgeImportBatch` | JSON／JSONL取込監査 | 行単位の作成・重複・拒否とerror indexを保持 |
@@ -124,6 +125,8 @@ Domain層はHTTP、Figma node、Anthropic response shapeへ直接依存させま
 
 ```text
 DesignRequest 1 --- n DesignPlan
+DesignRequest 1 --- n RequestReference
+RequestReference n --- 0..1 KnowledgeItem
 DesignRequest 1 --- n AiRun
 DesignRequest 1 --- n PairwiseComparison
 DesignPlan    1 --- n CreationRun
@@ -180,10 +183,14 @@ fallbackした`DesignPlan.generation.provider`は`local`、`fallbackUsed`は`tru
 1. raw inputをintent classifierへ渡す。
 2. `non-design`はDesign Requestとして保存しない。
 3. requestをZodで検証して保存する。
-4. audience、objective、concepts、avoid、promptとknowledge metadataの一致をscore化する。
-5. 上位knowledgeだけをPlanning contextへ渡す。
+4. 参考URLがある場合はrole、noteとともに`pending`で保存し、Planning contextから隔離する。
+5. 許可されたresearch clientが分析を記録し、人間が承認したreferenceだけをKnowledgeへ変換する。`avoid` roleはanti-patternへ変換する。
+6. 承認済みのrequest固有knowledgeを優先し、その後にaudience、objective、concepts、avoid、promptとknowledge metadataの一致をscore化する。
+7. 上位knowledgeだけをPlanning contextへ渡す。
 
 Rankingは現在決定的です。将来modelを導入しても、取得したknowledge IDとmodel versionをPlan／runへ残します。
+
+`RequestReference`の状態は`pending → analyzed → approved | rejected | unavailable`です。全referenceがfinalになるまでPlan生成は409で停止します。final状態からの分析・再審査も409で拒否します。承認は構造化analysisを必須とし、Knowledge IDをreferenceへ記録します。XDB serverはURLをfetchせず、HTTP／HTTPS、credentialなし、request内canonical URL重複なしだけを検証します。
 
 ### 8.1.1 Research ingestion and dataset quality
 
@@ -259,6 +266,9 @@ Claudeへserver-owned ID、権限、実行成功状態を決めさせません�
 | `GET /api/knowledge/assets`、`POST /api/knowledge/:id/asset` | local参照画像metadata取得・upload |
 | `GET/POST /api/style-profiles` | Style Profile取得・登録 |
 | `GET/POST /api/requests` | Design Request取得・登録 |
+| `GET /api/request-references` | Request Reference取得。任意の`requestId` filter |
+| `POST /api/request-references/:id/analysis` | 許可されたclientが構造化分析を記録 |
+| `POST /api/request-references/:id/review` | 人間が承認・拒否・取得不能を確定 |
 | `GET/POST /api/plans` | Plan取得・provider指定生成 |
 | `GET/POST /api/plan-families` | Localの複数戦略候補を一つのfamilyとして生成 |
 | `GET /api/ai-runs` | provider実行監査 |
@@ -281,10 +291,13 @@ MCPは新しい正本やbusiness logicを持たず、HTTPと同じ`XdbService`�
 - `xdb_classify_design_input`
 - `xdb_search_knowledge`
 - `xdb_get_dataset_snapshot`
+- `xdb_list_request_references`
 - `xdb_import_knowledge`
 - `xdb_update_knowledge_lifecycle`
 - `xdb_create_context_taxonomy`
 - `xdb_create_request`
+- `xdb_record_reference_analysis`
+- `xdb_review_request_reference`
 - `xdb_create_plan`
 - `xdb_create_plan_family`
 - `xdb_create_artifacts`
@@ -350,7 +363,7 @@ DesignRequest
 
 ### Current
 
-- SQLite: relation、status、score、provenance、audit。
+- SQLite: relation、status、score、provenance、audit、request referenceと承認lineage。
 - Filesystem: HTML、JSON、Figma script、report、reference image。Figma node証跡とreference metadataはSQLiteへ保存する。
 - SHA-256: artifact integrity。
 - `schema_migrations`: transaction単位のforward migration。
@@ -383,6 +396,7 @@ secretやaccount固有値を`design.config.json`へ置きません。環境変�
 - `rightsStatus = verified`でないrecordはtraining対象へ入れず、public availabilityから権利を推定しない。
 - `trainingEligible`の既定はfalseとする。
 - local uploadの画像だけを受け付け、arbitrary URL fetch、SVG、申告MIME不一致を拒否する。
+- Request ReferenceはXDB serverからfetchしない。research clientが外部閲覧する場合も、そのclientの権限・network policy・利用条件に従う。
 - XDBのMIT Licenseは、登録された画像、font、Figma component、AI出力の第三者権利を許諾しない。
 - public化前にauthentication、authorization、rate limit、request size、audit、deletion workflowを追加する。
 
