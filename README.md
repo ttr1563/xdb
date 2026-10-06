@@ -158,6 +158,17 @@ codex mcp add xdb -- \
 codex mcp list
 ```
 
+`codex mcp get xdb`で`enabled: true`と絶対pathのcommand／argsを確認してください。登録前から開いているCodex sessionには新しいtoolが追加されないため、登録後に新しいsessionを開始します。Claude／Anthropicのcredentialは不要です。
+
+新しいCodex sessionでは、たとえば次のように依頼して接続を確認できます。
+
+```text
+XDB MCPだけを使い、このデザイン依頼を分類してLocal PlanとHTML artifactを1件生成し、
+requestId、planId、runId、artifact URIを返してください。
+```
+
+成功時は`xdb_create_request`、`xdb_create_plan`、`xdb_create_artifacts`、`xdb_get_run_status`が同じlineage IDを返します。write toolの失敗時に別のidempotency keyで自動retryせず、保存状態を確認してください。
+
 公開tool：
 
 - read: `xdb_classify_design_input`、`xdb_search_knowledge`、`xdb_get_dataset_snapshot`、`xdb_get_run_status`
