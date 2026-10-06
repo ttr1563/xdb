@@ -21,9 +21,13 @@ import type {
   KnowledgeItem,
   PlanFamily,
   ReferenceAsset,
+  RequestReference,
+  RequestReferenceAnalysisInput,
+  RequestReferenceStatus,
   StyleProfile,
   StyleProfileInput,
 } from '../../shared/contracts.js';
+import { canonicalReferenceUrl } from '../../shared/contracts.js';
 import { knowledgeMetadataFingerprint, normalizeTaxonomyValue } from '../domain/knowledge-quality.js';
 
 type SqlRow = Record<string, unknown>;
@@ -95,7 +99,25 @@ function toReferenceAsset(row: SqlRow): ReferenceAsset {
   };
 }
 
-function toRequest(row: SqlRow): DesignRequest {
+function toRequestReference(row: SqlRow): RequestReference {
+  return {
+    id: String(row.id),
+    requestId: String(row.request_id),
+    url: String(row.url),
+    role: row.role as RequestReference['role'],
+    note: row.note === null ? null : String(row.note),
+    status: row.status as RequestReferenceStatus,
+    analysis: row.analysis_json === null
+      ? null
+      : parseJson<RequestReferenceAnalysisInput>(row.analysis_json),
+    decisionReason: row.decision_reason === null ? null : String(row.decision_reason),
+    knowledgeId: row.knowledge_id === null ? null : String(row.knowledge_id),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function toRequest(row: SqlRow, references: RequestReference[] = []): DesignRequest {
   return {
     id: String(row.id),
     prompt: String(row.prompt),
@@ -104,6 +126,7 @@ function toRequest(row: SqlRow): DesignRequest {
     objective: String(row.objective),
     concepts: parseJson<string[]>(row.concepts_json),
     avoid: parseJson<string[]>(row.avoid_json),
+    references,
     outputMode: row.output_mode as DesignRequest['outputMode'],
     intent: row.intent as DesignRequest['intent'],
     status: row.status as DesignRequest['status'],
@@ -432,31 +455,44 @@ export class Repository {
 
   public listRequests(): DesignRequest[] {
     return asRows(this.database.prepare('SELECT * FROM design_requests ORDER BY created_at DESC').all()).map((row) =>
-      toRequest(row),
+      toRequest(row, this.listRequestReferences(String(row.id))),
     );
   }
 
   public getRequest(id: string): DesignRequest | null {
     const row = asRow(this.database.prepare('SELECT * FROM design_requests WHERE id = ?').get(id));
-    return row ? toRequest(row) : null;
+    return row ? toRequest(row, this.listRequestReferences(id)) : null;
   }
 
   public createRequest(input: DesignRequestInput): DesignRequest {
+    const references = (input.references ?? []).map((reference) => ({
+      ...reference,
+      url: canonicalReferenceUrl(reference.url),
+    }));
+    if (new Set(references.map((reference) => reference.url)).size !== references.length) {
+      throw new Error('Duplicate request reference URL.');
+    }
     const request: DesignRequest = {
-      ...input,
+      prompt: input.prompt,
+      projectName: input.projectName,
+      audience: input.audience,
+      objective: input.objective,
+      concepts: input.concepts,
+      avoid: input.avoid,
+      outputMode: input.outputMode,
+      references: [],
       id: randomUUID(),
       intent: input.prompt.includes('イラスト') ? 'create-illustration' : 'create-design',
       status: 'draft',
       createdAt: now(),
     };
-    this.database
-      .prepare(`
+    this.database.transaction(() => {
+      this.database.prepare(`
         INSERT INTO design_requests (
           id, prompt, project_name, audience, objective, concepts_json, avoid_json,
           output_mode, intent, status, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `)
-      .run(
+      `).run(
         request.id,
         request.prompt,
         request.projectName,
@@ -469,7 +505,88 @@ export class Repository {
         request.status,
         request.createdAt,
       );
+      const insertReference = this.database.prepare(`
+        INSERT INTO request_references (
+          id, request_id, url, role, note, status, analysis_json, decision_reason,
+          knowledge_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'pending', NULL, NULL, NULL, ?, ?)
+      `);
+      request.references = references.map((reference) => {
+        const item: RequestReference = {
+          id: randomUUID(),
+          requestId: request.id,
+          ...reference,
+          status: 'pending',
+          analysis: null,
+          decisionReason: null,
+          knowledgeId: null,
+          createdAt: request.createdAt,
+          updatedAt: request.createdAt,
+        };
+        insertReference.run(
+          item.id, item.requestId, item.url, item.role, item.note, item.createdAt, item.updatedAt,
+        );
+        return item;
+      });
+    })();
     return request;
+  }
+
+  public listRequestReferences(requestId?: string): RequestReference[] {
+    const rows = requestId
+      ? this.database.prepare('SELECT * FROM request_references WHERE request_id = ? ORDER BY created_at').all(requestId)
+      : this.database.prepare('SELECT * FROM request_references ORDER BY created_at DESC').all();
+    return asRows(rows).map(toRequestReference);
+  }
+
+  public getRequestReference(id: string): RequestReference | null {
+    const row = asRow(this.database.prepare('SELECT * FROM request_references WHERE id = ?').get(id));
+    return row ? toRequestReference(row) : null;
+  }
+
+  public recordRequestReferenceAnalysis(
+    id: string,
+    analysis: RequestReferenceAnalysisInput,
+  ): RequestReference | null {
+    const timestamp = now();
+    const result = this.database.prepare(`
+      UPDATE request_references
+      SET status = 'analyzed', analysis_json = ?, decision_reason = NULL, updated_at = ?
+      WHERE id = ? AND status IN ('pending', 'analyzed')
+    `).run(JSON.stringify(analysis), timestamp, id);
+    return result.changes === 0 ? null : this.getRequestReference(id);
+  }
+
+  public reviewRequestReference(
+    id: string,
+    status: Extract<RequestReferenceStatus, 'approved' | 'rejected' | 'unavailable'>,
+    reason: string,
+    knowledgeId: string | null,
+  ): RequestReference | null {
+    const timestamp = now();
+    const result = this.database.prepare(`
+      UPDATE request_references
+      SET status = ?, decision_reason = ?, knowledge_id = ?, updated_at = ?
+      WHERE id = ? AND status IN ('pending', 'analyzed')
+    `).run(status, reason, knowledgeId, timestamp, id);
+    return result.changes === 0 ? null : this.getRequestReference(id);
+  }
+
+  public approveRequestReference(
+    id: string,
+    reason: string,
+    knowledgeInput: KnowledgeInput,
+  ): RequestReference | null {
+    return this.database.transaction(() => {
+      const reference = this.getRequestReference(id);
+      if (reference?.status !== 'analyzed') return null;
+      const contexts = this.resolveContexts(knowledgeInput.contexts);
+      const normalizedInput = { ...knowledgeInput, contexts };
+      const fingerprint = knowledgeMetadataFingerprint(normalizedInput, contexts);
+      const knowledge = this.findKnowledgeByFingerprint(fingerprint)
+        ?? this.createKnowledge(normalizedInput);
+      return this.reviewRequestReference(id, 'approved', reason, knowledge.id);
+    })();
   }
 
   public setRequestStatus(id: string, status: DesignRequest['status']): void {

@@ -39,6 +39,7 @@ APIを停止した状態でSQLiteとartifactsをversion付きdirectoryへcopyし
 - MCP writeの結果不明: process停止等でleaseが期限切れになった操作は`operation_outcome_unknown`とする。Request、Plan、Run、評価の保存状態とartifactを照合し、副作用がないと確認できた場合だけ新しいkeyで実行する。
 - MCP process停止: stdio child processだけが停止し、HTTP API・UI・SQLiteの保存データは継続利用できる。
 - Research import停止: `running` batchと`import_batch_id`付きitemを照合する。自動再開せず、同じ入力を再importした場合はmetadata fingerprint一致を重複として記録する。
+- Request Reference調査停止: `pending`は未着手、`analyzed`は人間の判断待ちとして保持する。XDB serverはURLを再取得しない。`approved | rejected | unavailable`はfinalであり、自動再審査しない。
 - Reference upload失敗: DB保存前のfile write失敗ではrecordを作らない。DB保存失敗時は今回作成したfileを削除する。knowledge metadata作成後にuploadだけ失敗した場合、UIは部分成功を明示し、同じknowledgeへ再uploadできる。
 - Knowledge exclude: retrieval／training snapshotから除外するが、理由とdataを保持しrestoreできる。
 - Knowledge delete: reference fileを先に削除し、DB transactionでreference metadataを消去して本文・出典をtombstone化する。privacyを優先するため、file削除後にDB更新が失敗した場合は再度deleteを実行してtombstoneを完了する。
@@ -50,6 +51,7 @@ APIを停止した状態でSQLiteとartifactsをversion付きdirectoryへcopyし
 3. `GET /api/export/dataset.jsonl`の先頭snapshot recordにあるSHA-256を学習runへ記録する。
 4. snapshot内knowledgeがactive、非重複、rights verified、training eligibleであることを確認する。
 5. reference metadataのpath、SHA-256、実fileを照合する。学習workerはXDB SQLiteへ直接書き戻さない。
+6. `GET /api/request-references`で、承認済みreferenceだけがKnowledge IDを持ち、未確認rightsがtraining snapshotへ入っていないことを確認する。
 
 ## Rollback
 

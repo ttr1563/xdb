@@ -13,6 +13,8 @@ import type {
   KnowledgeItem,
   KnowledgeImportBatch,
   OutputMode,
+  RequestReference,
+  RequestReferenceRole,
   ScoreSet,
   StyleProfile,
 } from '../shared/contracts';
@@ -45,6 +47,7 @@ interface AppData {
   styles: StyleProfile[];
   aiRuns: AiRun[];
   figmaDeliveries: FigmaDelivery[];
+  requestReferences: RequestReference[];
 }
 
 const emptySummary: DashboardSummary = {
@@ -79,6 +82,18 @@ function StatusBadge({ status }: { status: string }) {
 
 function EmptyState({ children }: { children: string }) {
   return <div className="empty-state"><span>∅</span><p>{children}</p></div>;
+}
+
+function parseReferenceInputs(value: string): Array<{ url: string; role: RequestReferenceRole; note: null }> {
+  const roles = new Set<RequestReferenceRole>(['inspiration', 'competitor', 'avoid', 'existing']);
+  return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+    const [candidateRole, ...urlParts] = line.split(/\s+/);
+    const hasExplicitRole = roles.has(candidateRole as RequestReferenceRole);
+    const role = hasExplicitRole
+      ? candidateRole as RequestReferenceRole
+      : 'inspiration';
+    return { role, url: hasExplicitRole ? urlParts.join(' ') : line, note: null };
+  });
 }
 
 function Overview({ data, onNavigate }: { data: AppData; onNavigate: (view: View) => void }) {
@@ -170,9 +185,15 @@ function CreateStudio({ data, refresh }: { data: AppData; refresh: () => Promise
           objective: String(form.get('objective')),
           concepts: String(form.get('concepts')).split(',').map((value) => value.trim()).filter(Boolean),
           avoid: String(form.get('avoid')).split(',').map((value) => value.trim()).filter(Boolean),
+          references: parseReferenceInputs(String(form.get('references') ?? '')),
           outputMode: mode,
         }),
       });
+      if (request.references.length > 0) {
+        setMessage(`${request.references.length}件の参考URLをResearchへ登録しました。Codexで分析し、採否を確定してからPlanを生成してください。`);
+        await refresh();
+        return;
+      }
       if (provider === 'local') {
         const result = await api<{ plans: DesignPlan[] }>('/api/plan-families', {
           method: 'POST',
@@ -219,6 +240,7 @@ function CreateStudio({ data, refresh }: { data: AppData; refresh: () => Promise
           <label>要望<textarea name="prompt" defaultValue="個人事業主向け請求書サービスのLPをデザインして。信頼感は必要だが堅すぎず、Heroには一貫したイラストを使いたい。" required minLength={12} rows={5} /></label>
           <div className="field-row"><label>対象ユーザー<input name="audience" defaultValue="ITに詳しくない個人事業主" required /></label><label>主要目的<input name="objective" defaultValue="無料登録への誘導" required /></label></div>
           <div className="field-row"><label>コンセプト <small>カンマ区切り</small><input name="concepts" defaultValue="信頼感, 親しみ, 簡単さ" required /></label><label>避ける表現 <small>カンマ区切り</small><input name="avoid" defaultValue="派手なグラデーション, 過度な3D, 情報過多" /></label></div>
+          <label>参考URL <small>1行1件。先頭に inspiration / competitor / avoid / existing を指定可能です。未指定はinspirationです。</small><textarea name="references" rows={4} placeholder={'inspiration https://example.com/reference\ncompetitor https://example.com/competitor'} /></label>
           <div className="form-actions"><button className="primary-button" disabled={busy}>{busy ? 'Research → Plan → Create…' : '一連の生成を実行'} <span>↗</span></button>{message && <p className="form-message" role="status">{message}</p>}</div>
         </form>
         <aside className="panel context-panel">
@@ -318,6 +340,7 @@ function ResearchStudio({ data, refresh }: { data: AppData; refresh: () => Promi
   }
   return (
     <div className="view-stack"><header className="page-heading"><div><p className="kicker">RESEARCH / 03</p><h1>良い理由と、<br />使える文脈を残す。</h1></div><p>参考画像だけでなく、要件・評価理由・出典を一つの知識として記録します。</p></header>
+      <section className="panel"><div className="panel-heading"><div><p className="kicker">REFERENCE QUEUE</p><h2>依頼に紐づく参考URL</h2></div><span>{data.requestReferences.length} references</span></div>{data.requestReferences.length === 0 ? <EmptyState>参考URLはCreateから追加できます。</EmptyState> : <div className="reference-queue">{data.requestReferences.map((reference) => <article key={reference.id}><div><StatusBadge status={reference.role} /><StatusBadge status={reference.status} /></div><a href={reference.url} target="_blank" rel="noreferrer">{reference.url}</a>{reference.analysis && <p>{reference.analysis.summary}</p>}{reference.knowledgeId && <small>Knowledge: {reference.knowledgeId}</small>}</article>)}</div>}</section>
       <section className="research-layout"><div className="knowledge-list">{data.knowledge.map((item) => <article className={`knowledge-card knowledge-card--${item.lifecycle}`} key={item.id}><div><span><StatusBadge status={item.kind} /> <StatusBadge status={item.lifecycle} /></span><time>{formatDate(item.createdAt)}</time></div><h2>{item.title}</h2><p>{item.summary}</p><div className="tag-row">{[...item.contexts, ...item.concepts].slice(0, 6).map((tag) => <span key={tag}>{tag}</span>)}</div><footer><span>根拠 · rights {item.provenance.rightsStatus}</span>{item.evidence}{item.duplicateOfId && <small>Duplicate: {item.duplicateKind} → {item.duplicateOfId}</small>}<div className="knowledge-actions">{item.lifecycle === 'active' && <button onClick={() => void changeLifecycle(item, 'exclude')}>Exclude</button>}{item.lifecycle === 'excluded' && <button onClick={() => void changeLifecycle(item, 'restore')}>Restore</button>}{item.lifecycle !== 'deleted' && <button onClick={() => void changeLifecycle(item, 'delete')}>Delete</button>}</div></footer></article>)}</div>
       <form className="panel compact-form" onSubmit={(event) => void submit(event)}><p className="kicker">ADD SIGNAL</p><h2>ナレッジを登録</h2><label>JSON / JSONL import<input type="file" accept=".json,.jsonl,application/json,application/x-ndjson" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importMetadata(file); }} /></label><label>タイトル<input name="title" required minLength={2} /></label><label>要約<textarea name="summary" required minLength={8} rows={3} /></label><label>種別<select name="kind"><option value="pattern">pattern</option><option value="principle">principle</option><option value="reference">reference</option><option value="anti-pattern">anti-pattern</option></select></label><label>文脈<input name="contexts" placeholder="landing-page, finance" required /></label><label>コンセプト<input name="concepts" placeholder="信頼感, clarity" required /></label><label>根拠<textarea name="evidence" required minLength={4} rows={3} /></label><label>Source type<select name="sourceType"><option value="human">human</option><option value="url">url</option><option value="figma">figma</option><option value="html">html</option><option value="generated">generated</option></select></label><label>Source URI<input name="sourceUri" type="url" /></label><label>License<input name="license" placeholder="MIT, CC BY 4.0, owned…" /></label><label>Rights<select name="rightsStatus"><option value="unverified">unverified</option><option value="verified">verified</option><option value="prohibited">prohibited</option></select></label><label className="checkbox-label"><input name="trainingEligible" type="checkbox" /> Training datasetへ利用可能</label><label>Reference image<input name="asset" type="file" accept="image/jpeg,image/png,image/webp" /></label><button className="primary-button">登録する</button>{message && <p className="form-message">{message}</p>}</form></section>
     </div>
@@ -392,16 +415,17 @@ export function App() {
     styles: [],
     aiRuns: [],
     figmaDeliveries: [],
+    requestReferences: [],
   });
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
-      const [config, summary, knowledge, requests, plans, runs, evaluations, styles, aiRuns, figmaDeliveries] = await Promise.all([
-        api<PublicConfig>('/api/config'), api<DashboardSummary>('/api/dashboard'), api<KnowledgeItem[]>('/api/knowledge'), api<DesignRequest[]>('/api/requests'), api<DesignPlan[]>('/api/plans'), api<CreationRun[]>('/api/runs'), api<Evaluation[]>('/api/evaluations'), api<StyleProfile[]>('/api/style-profiles'), api<AiRun[]>('/api/ai-runs'), api<FigmaDelivery[]>('/api/figma-deliveries'),
+      const [config, summary, knowledge, requests, plans, runs, evaluations, styles, aiRuns, figmaDeliveries, requestReferences] = await Promise.all([
+        api<PublicConfig>('/api/config'), api<DashboardSummary>('/api/dashboard'), api<KnowledgeItem[]>('/api/knowledge'), api<DesignRequest[]>('/api/requests'), api<DesignPlan[]>('/api/plans'), api<CreationRun[]>('/api/runs'), api<Evaluation[]>('/api/evaluations'), api<StyleProfile[]>('/api/style-profiles'), api<AiRun[]>('/api/ai-runs'), api<FigmaDelivery[]>('/api/figma-deliveries'), api<RequestReference[]>('/api/request-references'),
       ]);
-      setData({ config, summary, knowledge, requests, plans, runs, evaluations, styles, aiRuns, figmaDeliveries });
+      setData({ config, summary, knowledge, requests, plans, runs, evaluations, styles, aiRuns, figmaDeliveries, requestReferences });
       setError(null);
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'データを取得できません。'); } finally { setLoading(false); }
   }, []);

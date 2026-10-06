@@ -15,6 +15,8 @@ import {
   knowledgeImportInputSchema,
   knowledgeLifecycleInputSchema,
   planFamilyInputSchema,
+  requestReferenceAnalysisInputSchema,
+  requestReferenceReviewInputSchema,
   type Artifact,
 } from '../../shared/contracts.js';
 import { ApplicationError, type XdbService } from '../application/xdb-service.js';
@@ -163,6 +165,57 @@ export function createXdbMcpServer({ service, repository }: McpDependencies): Mc
       annotations: readAnnotations,
     },
     () => textResult(jsonRecord(service.datasetSnapshot())),
+  );
+
+  server.registerTool(
+    'xdb_list_request_references',
+    {
+      title: 'List design request reference candidates',
+      description: 'List user-supplied URLs and their research status. XDB does not fetch these URLs.',
+      inputSchema: z.object({ requestId: z.string().uuid().optional() }),
+      annotations: readAnnotations,
+    },
+    ({ requestId }) => textResult(jsonRecord({ references: repository.listRequestReferences(requestId) })),
+  );
+
+  server.registerTool(
+    'xdb_record_reference_analysis',
+    {
+      title: 'Record structured research for a request reference',
+      description: 'Store a rights-aware analysis produced by an authorized research client; does not fetch the URL.',
+      inputSchema: requestReferenceAnalysisInputSchema.extend({
+        referenceId: z.string().uuid(),
+        idempotencyKey: idempotencyKeySchema,
+      }),
+      annotations: writeAnnotations,
+    },
+    async ({ referenceId, idempotencyKey, ...input }) => {
+      const payload = { referenceId, ...input };
+      const operation = await executeIdempotent(repository, 'xdb_record_reference_analysis', idempotencyKey, payload, () =>
+        jsonRecord({ reference: service.recordRequestReferenceAnalysis(referenceId, input) }),
+      );
+      return textResult(withReplay(operation.result, operation.replayed));
+    },
+  );
+
+  server.registerTool(
+    'xdb_review_request_reference',
+    {
+      title: 'Approve or reject request reference research',
+      description: 'Approve analyzed research into Knowledge, or finalize it as rejected or unavailable.',
+      inputSchema: requestReferenceReviewInputSchema.extend({
+        referenceId: z.string().uuid(),
+        idempotencyKey: idempotencyKeySchema,
+      }),
+      annotations: writeAnnotations,
+    },
+    async ({ referenceId, idempotencyKey, ...input }) => {
+      const payload = { referenceId, ...input };
+      const operation = await executeIdempotent(repository, 'xdb_review_request_reference', idempotencyKey, payload, () =>
+        jsonRecord({ reference: service.reviewRequestReference(referenceId, input) }),
+      );
+      return textResult(withReplay(operation.result, operation.replayed));
+    },
   );
 
   server.registerTool(

@@ -77,7 +77,7 @@ npm start
 ## 基本的な使い方
 
 1. Overviewから「新しいデザインを始める」を選ぶ。
-2. プロジェクト名、対象ユーザー、目的、コンセプト、避ける表現を入力する。
+2. プロジェクト名、対象ユーザー、目的、コンセプト、避ける表現、必要なら参考URLを入力する。参考URLは1行1件で、`inspiration | competitor | avoid | existing`を先頭に指定できる。
 3. Planning AIを`Local | Claude`、出力先を`figma | html | both`から選ぶ。
 4. Researchから関連ナレッジが検索される。Localでは`conservative`、`expressive`、`conversion-led`のPlan Family、Claudeでは単一Planが生成される。
 5. HTML previewまたはFigma operation planを確認する。Figma出力では対象file keyを指定し、接続済みagentでdeliveryを実行・検証する。
@@ -86,6 +86,10 @@ npm start
 ### Researchデータを登録する
 
 Research画面では1件ずつ登録するほか、JSON配列または1行1件のJSONLを最大500件までimportできます。各行は独立して検証され、batch履歴に作成・重複・拒否件数と行番号別エラーを残します。外部URLから画像を自動取得せず、参照画像は手元のJPEG／PNG／WebP（8 MiB以下、40 megapixels以下）だけを明示uploadします。
+
+Design Requestへ追加した参考URLは、すぐPlanningへ渡されません。`pending → analyzed → approved | rejected | unavailable`で管理し、Codexなどの許可されたresearch clientが内容・根拠・権利状態を構造化した後、人間が採否を確定します。全URLがfinal状態になるまでPlanningを409で停止し、承認した項目だけをKnowledgeへ変換します。XDB server自体は任意URLを取得しないため、private addressへのアクセスやredirectを介したSSRFを生みません。`avoid`として承認したURLはanti-patternになります。
+
+公式デザインシステムを要約した12件の初期サンプルは[`examples/research/design-systems-starter.jsonl`](examples/research/design-systems-starter.jsonl)にあります。Research画面のJSON/JSONL importへそのまま指定できます。第三者ページの公開状態から学習権を推定せず、全件を`rightsStatus: unverified`、`trainingEligible: false`にしているため、通常検索には使えますが学習snapshotには入りません。学習利用する場合は各sourceの条件を確認し、licenseとrightsを個別に更新してください。
 
 ```json
 [
@@ -171,8 +175,8 @@ requestId、planId、runId、artifact URIを返してください。
 
 公開tool：
 
-- read: `xdb_classify_design_input`、`xdb_search_knowledge`、`xdb_get_dataset_snapshot`、`xdb_get_run_status`
-- write: `xdb_import_knowledge`、`xdb_update_knowledge_lifecycle`、`xdb_create_context_taxonomy`、`xdb_create_request`、`xdb_create_plan`、`xdb_create_plan_family`、`xdb_create_artifacts`、`xdb_record_figma_delivery`、`xdb_record_evaluation`、`xdb_compare_artifacts`
+- read: `xdb_classify_design_input`、`xdb_search_knowledge`、`xdb_get_dataset_snapshot`、`xdb_list_request_references`、`xdb_get_run_status`
+- write: `xdb_import_knowledge`、`xdb_update_knowledge_lifecycle`、`xdb_create_context_taxonomy`、`xdb_create_request`、`xdb_record_reference_analysis`、`xdb_review_request_reference`、`xdb_create_plan`、`xdb_create_plan_family`、`xdb_create_artifacts`、`xdb_record_figma_delivery`、`xdb_record_evaluation`、`xdb_compare_artifacts`
 - resource: `xdb://artifact/{artifactId}`
 
 write toolは8〜128文字の`idempotencyKey`を必須とします。同じkeyとpayloadは完了済みの場合だけ保存結果を返し、別payloadへの再利用は拒否します。実行中、失敗済み、またはprocess停止等で結果不明になったkeyからdomain処理を自動再実行しません。保存状態を照合し、安全を確認した場合だけ新しいkeyで明示的に実行してください。`xdb_create_artifacts`はHTMLとFigma operation planをlocal生成し、外部write後の検証済み証跡は`xdb_record_figma_delivery`で保存します。
@@ -207,6 +211,8 @@ npm run build
 - `GET /api/export/evaluations.jsonl`: 評価履歴のJSONL
 - `GET /api/export/dataset.jsonl`: snapshot header、権利確認済みknowledge、taxonomy、参照画像metadataの決定的な学習用snapshot
 - `GET /api/ai-runs`: AI provider、model、token使用量、latency、試行回数、fallback、error codeの監査履歴
+- `GET /api/request-references`: 参考URLとresearch／承認状態。`requestId`で絞り込み可能
+- `POST /api/request-references/:id/analysis|review`: 構造化分析と人間の採否を分離して記録
 - `GET/POST /api/figma-deliveries`: Figma外部writeのnode ID、構造監査、screenshot確認、status
 - local stdio MCP: HTTP APIと同じapplication serviceをClaude Code・Codexから呼び出す
 

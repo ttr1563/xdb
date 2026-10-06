@@ -14,6 +14,7 @@ import type {
   KnowledgeImportBatch,
   KnowledgeItem,
   PlanFamily,
+  RequestReference,
 } from '../shared/contracts.js';
 
 import { buildApp } from './app.js';
@@ -113,6 +114,159 @@ function knowledgePayload(title: string, sourceUri: string, contexts = ['product
 }
 
 describe('XDB API workflow', () => {
+  it('keeps request URLs quarantined until analyzed and approved into Knowledge', async () => {
+    const { app, database } = createTestApp();
+    const requestResponse = await app.inject({
+      method: 'POST',
+      url: '/api/requests',
+      payload: {
+        prompt: '参考サイトを踏まえて会計サービスのLPをデザインしてください',
+        projectName: 'Reference Research',
+        audience: '小規模事業者',
+        objective: '無料登録を増やす',
+        concepts: ['明快さ'],
+        avoid: ['複雑な導線'],
+        references: [
+          {
+            url: 'https://example.com/design-system#hero',
+            role: 'inspiration',
+            note: '情報階層を確認する',
+          },
+          { url: 'https://example.com/competitor', role: 'competitor', note: null },
+          { url: 'https://example.com/unavailable', role: 'existing', note: null },
+        ],
+        outputMode: 'html',
+      },
+    });
+    expect(requestResponse.statusCode).toBe(201);
+    const designRequest = requestResponse.json<DesignRequest>();
+    expect(designRequest.references).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        url: 'https://example.com/design-system',
+        role: 'inspiration',
+        status: 'pending',
+        knowledgeId: null,
+      }),
+    ]));
+    const reference = designRequest.references.find((item) => item.role === 'inspiration');
+    const rejectedReference = designRequest.references.find((item) => item.role === 'competitor');
+    const unavailableReference = designRequest.references.find((item) => item.role === 'existing');
+    if (!reference || !rejectedReference || !unavailableReference) throw new Error('Expected request references.');
+
+    const planBeforeApproval = await app.inject({
+      method: 'POST',
+      url: '/api/plans',
+      payload: { requestId: designRequest.id, provider: 'local' },
+    });
+    expect(planBeforeApproval.statusCode).toBe(409);
+    expect(planBeforeApproval.json()).toEqual(expect.objectContaining({ error: 'request_research_pending' }));
+
+    const prematureApproval = await app.inject({
+      method: 'POST',
+      url: `/api/request-references/${reference.id}/review`,
+      payload: { decision: 'approved', reason: '分析前なので承認できない' },
+    });
+    expect(prematureApproval.statusCode).toBe(409);
+
+    const analysisResponse = await app.inject({
+      method: 'POST',
+      url: `/api/request-references/${reference.id}/analysis`,
+      payload: {
+        title: '明確な情報階層を持つHero',
+        summary: '価値、根拠、行動を一方向に配置し、主要な行動を明確にしている。',
+        contexts: ['landing-page', 'hero'],
+        concepts: ['clarity', 'trustworthy'],
+        strengths: ['主要CTAと価値提案の関係が明確である。'],
+        risks: ['自社の情報量へそのまま転用すると密度が上がる。'],
+        evidence: '公開ページを2026-10-06に目視し、構造と役割を記録した。',
+        license: null,
+        rightsStatus: 'unverified',
+        trainingEligible: false,
+      },
+    });
+    expect(analysisResponse.statusCode).toBe(200);
+    expect(analysisResponse.json<RequestReference>().status).toBe('analyzed');
+
+    const reviewResponse = await app.inject({
+      method: 'POST',
+      url: `/api/request-references/${reference.id}/review`,
+      payload: { decision: 'approved', reason: '設計時の参考情報として採用する。' },
+    });
+    expect(reviewResponse.statusCode).toBe(200);
+    const approved = reviewResponse.json<RequestReference>();
+    expect(approved).toEqual(expect.objectContaining({ status: 'approved' }));
+    expect(approved.knowledgeId).not.toBeNull();
+
+    const rejectedResponse = await app.inject({
+      method: 'POST',
+      url: `/api/request-references/${rejectedReference.id}/review`,
+      payload: { decision: 'rejected', reason: '今回の目的とは文脈が異なる。' },
+    });
+    expect(rejectedResponse.json<RequestReference>()).toEqual(expect.objectContaining({
+      status: 'rejected', knowledgeId: null,
+    }));
+    const unavailableResponse = await app.inject({
+      method: 'POST',
+      url: `/api/request-references/${unavailableReference.id}/review`,
+      payload: { decision: 'unavailable', reason: '調査時点で内容を確認できなかった。' },
+    });
+    expect(unavailableResponse.json<RequestReference>()).toEqual(expect.objectContaining({
+      status: 'unavailable', knowledgeId: null,
+    }));
+
+    const planAfterApproval = await app.inject({
+      method: 'POST',
+      url: '/api/plans',
+      payload: { requestId: designRequest.id, provider: 'local' },
+    });
+    expect(planAfterApproval.statusCode).toBe(201);
+    expect(planAfterApproval.json<DesignPlan>().knowledgeIds).toContain(approved.knowledgeId);
+
+    const finalizedAnalysis = await app.inject({
+      method: 'POST',
+      url: `/api/request-references/${reference.id}/analysis`,
+      payload: analysisResponse.json<RequestReference>().analysis,
+    });
+    expect(finalizedAnalysis.statusCode).toBe(409);
+
+    const exportResponse = await app.inject({ method: 'GET', url: '/api/export' });
+    expect(exportResponse.json<{ version: number; requestReferences: RequestReference[] }>()).toMatchObject({
+      version: 5,
+      requestReferences: expect.arrayContaining([
+        expect.objectContaining({ id: reference.id, status: 'approved' }),
+        expect.objectContaining({ id: rejectedReference.id, status: 'rejected' }),
+        expect.objectContaining({ id: unavailableReference.id, status: 'unavailable' }),
+      ]),
+    });
+    await app.close();
+    database.close();
+  });
+
+  it('rejects duplicate request reference URLs after canonicalizing fragments', async () => {
+    const { app, database } = createTestApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/requests',
+      payload: {
+        prompt: '重複した参考URLを含むデザイン依頼を検証してください',
+        projectName: 'Duplicate References',
+        audience: '開発者',
+        objective: '入力検証',
+        concepts: ['明快さ'],
+        avoid: [],
+        references: [
+          { url: 'https://example.com/pattern#one', role: 'inspiration', note: null },
+          { url: 'https://example.com/pattern#two', role: 'competitor', note: null },
+        ],
+        outputMode: 'html',
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect((await app.inject({ method: 'GET', url: '/api/requests' })).json()).toEqual([]);
+    await app.close();
+    database.close();
+  });
+
   it('rejects plan family generation when the local provider is disabled', async () => {
     const { app, database } = createTestApp({}, {}, { enabled: false });
     const requestResponse = await app.inject({
@@ -409,7 +563,7 @@ describe('XDB API workflow', () => {
     expect(statusResponse.json<CreationRun[]>()[0]?.figmaFileKey).toBe('test-file-key');
     const exportResponse = await app.inject({ method: 'GET', url: '/api/export' });
     expect(exportResponse.json<{ version: number; figmaDeliveries: FigmaDelivery[] }>()).toMatchObject({
-      version: 4,
+      version: 5,
       figmaDeliveries: [expect.objectContaining({ runId: run.id, status: 'completed' })],
     });
     await app.close();
