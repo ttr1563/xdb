@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
+import multipartPlugin from '@fastify/multipart';
 import staticPlugin from '@fastify/static';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
@@ -13,7 +14,10 @@ import {
   evaluationInputSchema,
   figmaDeliveryInputSchema,
   inputHookSchema,
+  contextTaxonomyInputSchema,
+  knowledgeImportInputSchema,
   knowledgeInputSchema,
+  knowledgeLifecycleInputSchema,
   planFamilyInputSchema,
   styleProfileInputSchema,
   type DashboardSummary,
@@ -38,6 +42,12 @@ function currentMonthStart(): string {
 export function buildApp({ repository, config }: AppDependencies): FastifyInstance {
   seedXdbRepository(repository);
   const app = Fastify({ logger: false });
+  app.register(multipartPlugin, {
+    limits: { files: 1, fileSize: 8 * 1024 * 1024, fields: 0, parts: 1 },
+  });
+  app.addContentTypeParser('application/x-ndjson', { parseAs: 'string' }, (_request, body, done) => {
+    done(null, body);
+  });
   const artifactStore = new ArtifactStore(config.artifactsPath);
   const service = new XdbService({ repository, config, artifactStore });
   const anthropicConfigured = Boolean(config.anthropic.apiKey && config.anthropic.model);
@@ -108,7 +118,38 @@ export function buildApp({ repository, config }: AppDependencies): FastifyInstan
   app.get('/api/knowledge', async () => repository.listKnowledge());
   app.post('/api/knowledge', async (request, reply) => {
     const input = knowledgeInputSchema.parse(request.body);
-    return reply.status(201).send(repository.createKnowledge(input));
+    return reply.status(201).send(service.createKnowledge(input));
+  });
+  app.patch('/api/knowledge/:id/lifecycle', async (request) => {
+    const { id } = request.params as { id: string };
+    const input = knowledgeLifecycleInputSchema.parse(request.body);
+    return service.updateKnowledgeLifecycle(id, input);
+  });
+  app.post('/api/knowledge/import', async (request, reply) => {
+    const raw = request.body;
+    const input = typeof raw === 'string'
+      ? knowledgeImportInputSchema.parse({
+        format: 'jsonl',
+        items: raw.split(/\r?\n/).filter(Boolean).map((line) => {
+          try { return JSON.parse(line) as unknown; } catch { return { invalidJsonLine: line }; }
+        }),
+      })
+      : knowledgeImportInputSchema.parse(raw);
+    return reply.status(201).send(service.importKnowledge(input));
+  });
+  app.get('/api/knowledge/imports', async () => repository.listKnowledgeImportBatches());
+  app.get('/api/knowledge/taxonomy', async () => repository.listContextTaxonomy());
+  app.post('/api/knowledge/taxonomy', async (request, reply) => {
+    const input = contextTaxonomyInputSchema.parse(request.body);
+    return reply.status(201).send(service.createContextTaxonomy(input));
+  });
+  app.get('/api/knowledge/assets', async () => repository.listReferenceAssets());
+  app.post('/api/knowledge/:id/asset', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const part = await request.file({ limits: { fileSize: 8 * 1024 * 1024, files: 1 } });
+    if (!part) return reply.status(400).send({ error: 'reference_asset_required' });
+    const result = await service.uploadReferenceAsset(id, await part.toBuffer(), part.filename, part.mimetype);
+    return reply.status(201).send(result);
   });
 
   app.get('/api/style-profiles', async () => repository.listStyleProfiles());
@@ -167,8 +208,11 @@ export function buildApp({ repository, config }: AppDependencies): FastifyInstan
 
   app.get('/api/export', async () => ({
     exportedAt: new Date().toISOString(),
-    version: 3,
+    version: 4,
     knowledge: repository.listKnowledge(),
+    knowledgeImportBatches: repository.listKnowledgeImportBatches(),
+    contextTaxonomy: repository.listContextTaxonomy(),
+    referenceAssets: repository.listReferenceAssets(),
     styleProfiles: repository.listStyleProfiles(),
     requests: repository.listRequests(),
     plans: repository.listPlans(),
@@ -183,6 +227,17 @@ export function buildApp({ repository, config }: AppDependencies): FastifyInstan
   app.get('/api/export/evaluations.jsonl', async (_request, reply) => {
     const lines = repository.listEvaluations().map((evaluation) => JSON.stringify(evaluation)).join('\n');
     return reply.type('application/x-ndjson').send(lines ? `${lines}\n` : '');
+  });
+
+  app.get('/api/export/dataset.jsonl', async (_request, reply) => {
+    const snapshot = service.datasetSnapshot();
+    const lines = [
+      JSON.stringify({ type: 'snapshot', version: snapshot.version, createdAt: snapshot.createdAt, sha256: snapshot.sha256 }),
+      ...snapshot.knowledge.map((knowledge) => JSON.stringify({ type: 'knowledge', knowledge })),
+      ...snapshot.taxonomy.map((taxonomy) => JSON.stringify({ type: 'taxonomy', taxonomy })),
+      ...snapshot.referenceAssets.map((asset) => JSON.stringify({ type: 'reference-asset', asset })),
+    ];
+    return reply.type('application/x-ndjson').send(`${lines.join('\n')}\n`);
   });
 
   app.register(staticPlugin, {

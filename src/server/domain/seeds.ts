@@ -10,7 +10,7 @@ export const knowledgeSeeds: KnowledgeInput[] = [
     contexts: ['landing-page', 'marketing-site', 'mobile', 'desktop'],
     concepts: ['明快さ', '信頼感', 'clarity', 'trustworthy'],
     evidence: '情報階層を評価するための初期仮説。人間の比較評価でcontext別に更新する。',
-    provenance: { sourceType: 'system', sourceUri: null, license: null, trainingEligible: true, capturedAt },
+    provenance: { sourceType: 'system', sourceUri: null, license: null, rightsStatus: 'verified', trainingEligible: true, capturedAt },
   },
   {
     title: '主要CTAを競合させない',
@@ -19,7 +19,7 @@ export const knowledgeSeeds: KnowledgeInput[] = [
     contexts: ['landing-page', 'signup', 'conversion'],
     concepts: ['明快さ', '集中', 'clarity'],
     evidence: '選択肢を減らす設計仮説。conversion実測とは区別して保持する。',
-    provenance: { sourceType: 'system', sourceUri: null, license: null, trainingEligible: true, capturedAt },
+    provenance: { sourceType: 'system', sourceUri: null, license: null, rightsStatus: 'verified', trainingEligible: true, capturedAt },
   },
   {
     title: '無目的な装飾で情報密度を上げない',
@@ -28,7 +28,7 @@ export const knowledgeSeeds: KnowledgeInput[] = [
     contexts: ['illustration', 'hero', 'marketing-site'],
     concepts: ['静けさ', '信頼感', 'calm', 'trustworthy'],
     evidence: '初期anti-pattern。承認・不採用画像の理由から具体化する。',
-    provenance: { sourceType: 'system', sourceUri: null, license: null, trainingEligible: true, capturedAt },
+    provenance: { sourceType: 'system', sourceUri: null, license: null, rightsStatus: 'verified', trainingEligible: true, capturedAt },
   },
   {
     title: 'mobileで主題とCTAが同時に見える構図を優先する',
@@ -37,7 +37,7 @@ export const knowledgeSeeds: KnowledgeInput[] = [
     contexts: ['responsive', 'mobile', 'hero'],
     concepts: ['使いやすさ', 'clarity', 'responsive'],
     evidence: 'responsive designの初期基準。viewport別screenshot評価で更新する。',
-    provenance: { sourceType: 'system', sourceUri: null, license: null, trainingEligible: true, capturedAt },
+    provenance: { sourceType: 'system', sourceUri: null, license: null, rightsStatus: 'verified', trainingEligible: true, capturedAt },
   },
 ];
 

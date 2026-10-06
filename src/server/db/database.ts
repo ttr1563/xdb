@@ -4,6 +4,9 @@ import path from 'node:path';
 
 import Database from 'better-sqlite3';
 
+import type { KnowledgeInput } from '../../shared/contracts.js';
+import { knowledgeMetadataFingerprint, normalizeTaxonomyValue } from '../domain/knowledge-quality.js';
+
 const migrationOne = `
   PRAGMA journal_mode = WAL;
   PRAGMA foreign_keys = ON;
@@ -222,6 +225,64 @@ const migrationEight = `
   ALTER TABLE figma_deliveries ADD COLUMN observed_node_ids_json TEXT NOT NULL DEFAULT '[]';
 `;
 
+const migrationNine = `
+  ALTER TABLE knowledge_items ADD COLUMN lifecycle TEXT NOT NULL DEFAULT 'active'
+    CHECK (lifecycle IN ('active', 'excluded', 'deleted'));
+  ALTER TABLE knowledge_items ADD COLUMN lifecycle_reason TEXT;
+  ALTER TABLE knowledge_items ADD COLUMN rights_status TEXT NOT NULL DEFAULT 'unverified'
+    CHECK (rights_status IN ('unverified', 'verified', 'prohibited'));
+  ALTER TABLE knowledge_items ADD COLUMN metadata_fingerprint TEXT;
+  ALTER TABLE knowledge_items ADD COLUMN duplicate_of_id TEXT;
+  ALTER TABLE knowledge_items ADD COLUMN duplicate_kind TEXT
+    CHECK (duplicate_kind IN ('metadata', 'exact-asset', 'perceptual'));
+  ALTER TABLE knowledge_items ADD COLUMN import_batch_id TEXT;
+  ALTER TABLE knowledge_items ADD COLUMN updated_at TEXT;
+  ALTER TABLE knowledge_items ADD COLUMN deleted_at TEXT;
+
+  CREATE TABLE knowledge_import_batches (
+    id TEXT PRIMARY KEY,
+    format TEXT NOT NULL CHECK (format IN ('json', 'jsonl')),
+    status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'partial', 'failed')),
+    total_count INTEGER NOT NULL,
+    created_count INTEGER NOT NULL,
+    duplicate_count INTEGER NOT NULL,
+    rejected_count INTEGER NOT NULL,
+    errors_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE context_taxonomy (
+    id TEXT PRIMARY KEY,
+    canonical TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE context_aliases (
+    alias TEXT PRIMARY KEY,
+    taxonomy_id TEXT NOT NULL REFERENCES context_taxonomy(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE reference_assets (
+    id TEXT PRIMARY KEY,
+    knowledge_id TEXT NOT NULL UNIQUE REFERENCES knowledge_items(id),
+    original_name TEXT NOT NULL,
+    storage_path TEXT NOT NULL UNIQUE,
+    mime_type TEXT NOT NULL CHECK (mime_type IN ('image/jpeg', 'image/png', 'image/webp')),
+    byte_size INTEGER NOT NULL,
+    width INTEGER NOT NULL,
+    height INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    perceptual_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX idx_knowledge_lifecycle ON knowledge_items(lifecycle, created_at);
+  CREATE INDEX idx_knowledge_fingerprint ON knowledge_items(metadata_fingerprint);
+  CREATE INDEX idx_knowledge_duplicate ON knowledge_items(duplicate_of_id);
+  CREATE INDEX idx_reference_assets_sha256 ON reference_assets(sha256);
+  CREATE INDEX idx_reference_assets_perceptual ON reference_assets(perceptual_hash);
+`;
+
 export function openDatabase(databasePath: string): Database.Database {
   mkdirSync(path.dirname(databasePath), { recursive: true });
   const database = new Database(databasePath);
@@ -364,6 +425,82 @@ export function openDatabase(databasePath: string): Database.Database {
       database
         .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
         .run(8, new Date().toISOString());
+      database.exec('COMMIT;');
+    } catch (error) {
+      database.exec('ROLLBACK;');
+      throw error;
+    }
+  }
+
+  if (currentVersion < 9) {
+    database.exec('BEGIN IMMEDIATE;');
+    try {
+      database.exec(migrationNine);
+      const rows = database.prepare(`
+        SELECT id, title, summary, kind, contexts_json, concepts_json, evidence,
+               provenance_json, created_at
+        FROM knowledge_items
+      `).all() as Array<{
+        id: string;
+        title: string;
+        summary: string;
+        kind: string;
+        contexts_json: string;
+        concepts_json: string;
+        evidence: string;
+        provenance_json: string;
+        created_at: string;
+      }>;
+      const updateKnowledge = database.prepare(`
+        UPDATE knowledge_items
+        SET contexts_json = ?, provenance_json = ?, rights_status = ?,
+            metadata_fingerprint = ?, updated_at = ?
+        WHERE id = ?
+      `);
+      const insertTaxonomy = database.prepare(
+        'INSERT OR IGNORE INTO context_taxonomy (id, canonical, created_at) VALUES (?, ?, ?)',
+      );
+      const insertAlias = database.prepare(
+        'INSERT OR IGNORE INTO context_aliases (alias, taxonomy_id) VALUES (?, ?)',
+      );
+      for (const row of rows) {
+        const contexts = (JSON.parse(row.contexts_json) as string[]).map(normalizeTaxonomyValue);
+        const provenance = JSON.parse(row.provenance_json) as KnowledgeInput['provenance'];
+        const rightsStatus: 'verified' | 'unverified' = provenance.trainingEligible && provenance.sourceType === 'system'
+          ? 'verified'
+          : 'unverified';
+        const migratedProvenance = {
+          ...provenance,
+          rightsStatus,
+          trainingEligible: rightsStatus === 'verified' && provenance.trainingEligible,
+        };
+        const input: KnowledgeInput = {
+          title: row.title,
+          summary: row.summary,
+          kind: row.kind as KnowledgeInput['kind'],
+          contexts,
+          concepts: JSON.parse(row.concepts_json) as string[],
+          evidence: row.evidence,
+          provenance: migratedProvenance,
+        };
+        updateKnowledge.run(
+          JSON.stringify(contexts),
+          JSON.stringify(migratedProvenance),
+          rightsStatus,
+          knowledgeMetadataFingerprint(input, contexts),
+          row.created_at,
+          row.id,
+        );
+        for (const context of contexts) {
+          const taxonomyId = createHash('sha256').update(context).digest('hex').slice(0, 32);
+          const id = `${taxonomyId.slice(0, 8)}-${taxonomyId.slice(8, 12)}-4${taxonomyId.slice(13, 16)}-a${taxonomyId.slice(17, 20)}-${taxonomyId.slice(20, 32)}`;
+          insertTaxonomy.run(id, context, row.created_at);
+          insertAlias.run(context, id);
+        }
+      }
+      database
+        .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
+        .run(9, new Date().toISOString());
       database.exec('COMMIT;');
     } catch (error) {
       database.exec('ROLLBACK;');

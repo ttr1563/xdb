@@ -14,12 +14,17 @@ import type {
   EvaluationInput,
   FigmaDelivery,
   FigmaDeliveryInput,
+  ContextTaxonomyInput,
+  ContextTaxonomyTerm,
+  KnowledgeImportBatch,
   KnowledgeInput,
   KnowledgeItem,
   PlanFamily,
+  ReferenceAsset,
   StyleProfile,
   StyleProfileInput,
 } from '../../shared/contracts.js';
+import { knowledgeMetadataFingerprint, normalizeTaxonomyValue } from '../domain/knowledge-quality.js';
 
 type SqlRow = Record<string, unknown>;
 
@@ -62,6 +67,30 @@ function toKnowledge(row: SqlRow): KnowledgeItem {
     concepts: parseJson<string[]>(row.concepts_json),
     evidence: String(row.evidence),
     provenance: parseJson<KnowledgeItem['provenance']>(row.provenance_json),
+    lifecycle: row.lifecycle as KnowledgeItem['lifecycle'],
+    lifecycleReason: row.lifecycle_reason === null ? null : String(row.lifecycle_reason),
+    metadataFingerprint: String(row.metadata_fingerprint),
+    duplicateOfId: row.duplicate_of_id === null ? null : String(row.duplicate_of_id),
+    duplicateKind: row.duplicate_kind === null ? null : row.duplicate_kind as KnowledgeItem['duplicateKind'],
+    importBatchId: row.import_batch_id === null ? null : String(row.import_batch_id),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+    deletedAt: row.deleted_at === null ? null : String(row.deleted_at),
+  };
+}
+
+function toReferenceAsset(row: SqlRow): ReferenceAsset {
+  return {
+    id: String(row.id),
+    knowledgeId: String(row.knowledge_id),
+    originalName: String(row.original_name),
+    storagePath: String(row.storage_path),
+    mimeType: row.mime_type as ReferenceAsset['mimeType'],
+    byteSize: Number(row.byte_size),
+    width: Number(row.width),
+    height: Number(row.height),
+    sha256: String(row.sha256),
+    perceptualHash: String(row.perceptual_hash),
     createdAt: String(row.created_at),
   };
 }
@@ -150,13 +179,82 @@ export class Repository {
     );
   }
 
-  public createKnowledge(input: KnowledgeInput): KnowledgeItem {
-    const item: KnowledgeItem = { ...input, id: randomUUID(), createdAt: now() };
+  public listRetrievableKnowledge(): KnowledgeItem[] {
+    return asRows(this.database.prepare(`
+      SELECT * FROM knowledge_items
+      WHERE lifecycle = 'active' AND duplicate_of_id IS NULL
+      ORDER BY created_at DESC
+    `).all()).map(toKnowledge);
+  }
+
+  public getKnowledge(id: string): KnowledgeItem | null {
+    const row = asRow(this.database.prepare('SELECT * FROM knowledge_items WHERE id = ?').get(id));
+    return row ? toKnowledge(row) : null;
+  }
+
+  public findKnowledgeByFingerprint(fingerprint: string): KnowledgeItem | null {
+    const row = asRow(this.database.prepare(`
+      SELECT * FROM knowledge_items
+      WHERE metadata_fingerprint = ? AND lifecycle != 'deleted'
+      ORDER BY created_at ASC LIMIT 1
+    `).get(fingerprint));
+    return row ? toKnowledge(row) : null;
+  }
+
+  public resolveContexts(contexts: string[]): string[] {
+    const resolved: string[] = [];
+    const timestamp = now();
+    const findAlias = this.database.prepare(`
+      SELECT taxonomy.canonical
+      FROM context_aliases aliases
+      JOIN context_taxonomy taxonomy ON taxonomy.id = aliases.taxonomy_id
+      WHERE aliases.alias = ?
+    `);
+    const insertTaxonomy = this.database.prepare(
+      'INSERT OR IGNORE INTO context_taxonomy (id, canonical, created_at) VALUES (?, ?, ?)',
+    );
+    const insertAlias = this.database.prepare(
+      'INSERT OR IGNORE INTO context_aliases (alias, taxonomy_id) VALUES (?, ?)',
+    );
+    for (const context of contexts) {
+      const alias = normalizeTaxonomyValue(context);
+      const existing = asRow(findAlias.get(alias));
+      if (existing) {
+        resolved.push(String(existing.canonical));
+        continue;
+      }
+      const id = randomUUID();
+      insertTaxonomy.run(id, alias, timestamp);
+      insertAlias.run(alias, id);
+      resolved.push(alias);
+    }
+    return [...new Set(resolved)];
+  }
+
+  public createKnowledge(input: KnowledgeInput, importBatchId: string | null = null): KnowledgeItem {
+    const contexts = this.resolveContexts(input.contexts);
+    const timestamp = now();
+    const item: KnowledgeItem = {
+      ...input,
+      contexts,
+      id: randomUUID(),
+      lifecycle: 'active',
+      lifecycleReason: null,
+      metadataFingerprint: knowledgeMetadataFingerprint(input, contexts),
+      duplicateOfId: null,
+      duplicateKind: null,
+      importBatchId,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      deletedAt: null,
+    };
     this.database
       .prepare(`
         INSERT INTO knowledge_items (
-          id, title, summary, kind, contexts_json, concepts_json, evidence, provenance_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, title, summary, kind, contexts_json, concepts_json, evidence, provenance_json,
+          lifecycle, lifecycle_reason, rights_status, metadata_fingerprint, duplicate_of_id,
+          duplicate_kind, import_batch_id, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         item.id,
@@ -167,9 +265,169 @@ export class Repository {
         JSON.stringify(item.concepts),
         item.evidence,
         JSON.stringify(item.provenance),
+        item.lifecycle,
+        item.lifecycleReason,
+        item.provenance.rightsStatus,
+        item.metadataFingerprint,
+        item.duplicateOfId,
+        item.duplicateKind,
+        item.importBatchId,
         item.createdAt,
+        item.updatedAt,
+        item.deletedAt,
       );
     return item;
+  }
+
+  public updateKnowledgeLifecycle(
+    id: string,
+    action: 'exclude' | 'restore' | 'delete',
+    reason: string,
+  ): KnowledgeItem | null {
+    const existing = this.getKnowledge(id);
+    if (!existing) return null;
+    if (existing.lifecycle === 'deleted') return existing;
+    const timestamp = now();
+    if (action === 'delete') {
+      this.database.transaction(() => {
+        this.database.prepare('DELETE FROM reference_assets WHERE knowledge_id = ?').run(id);
+        this.database.prepare(`
+          UPDATE knowledge_items
+          SET title = '[deleted]', summary = 'Deleted knowledge tombstone.', contexts_json = '["deleted"]',
+              concepts_json = '["deleted"]', evidence = 'Deleted by lifecycle request.',
+              provenance_json = ?, lifecycle = 'deleted', lifecycle_reason = ?, rights_status = 'prohibited',
+              metadata_fingerprint = ?, duplicate_of_id = NULL, duplicate_kind = NULL,
+              updated_at = ?, deleted_at = ?
+          WHERE id = ?
+        `).run(JSON.stringify({
+          sourceType: 'generated', sourceUri: null, license: null, rightsStatus: 'prohibited',
+          trainingEligible: false, capturedAt: timestamp,
+        }), reason, knowledgeMetadataFingerprint({
+          title: '[deleted]',
+          summary: 'Deleted knowledge tombstone.',
+          kind: existing.kind,
+          contexts: ['deleted'],
+          concepts: ['deleted'],
+          evidence: 'Deleted by lifecycle request.',
+          provenance: {
+            sourceType: 'generated', sourceUri: null, license: null, rightsStatus: 'prohibited',
+            trainingEligible: false, capturedAt: timestamp,
+          },
+        }, ['deleted']), timestamp, timestamp, id);
+      })();
+    } else {
+      this.database.prepare(`
+        UPDATE knowledge_items
+        SET lifecycle = ?, lifecycle_reason = ?, updated_at = ?, deleted_at = NULL
+        WHERE id = ?
+      `).run(action === 'exclude' ? 'excluded' : 'active', reason, timestamp, id);
+    }
+    return this.getKnowledge(id);
+  }
+
+  public listContextTaxonomy(): ContextTaxonomyTerm[] {
+    const rows = asRows(this.database.prepare('SELECT * FROM context_taxonomy ORDER BY canonical').all());
+    const aliases = this.database.prepare('SELECT alias FROM context_aliases WHERE taxonomy_id = ? ORDER BY alias');
+    return rows.map((row) => ({
+      id: String(row.id),
+      canonical: String(row.canonical),
+      aliases: asRows(aliases.all(row.id)).map((alias) => String(alias.alias)),
+      createdAt: String(row.created_at),
+    }));
+  }
+
+  public createContextTaxonomy(input: ContextTaxonomyInput): ContextTaxonomyTerm {
+    const canonical = normalizeTaxonomyValue(input.canonical);
+    const aliases = [...new Set([canonical, ...input.aliases.map(normalizeTaxonomyValue)])];
+    const timestamp = now();
+    const id = randomUUID();
+    this.database.transaction(() => {
+      this.database.prepare('INSERT INTO context_taxonomy (id, canonical, created_at) VALUES (?, ?, ?)')
+        .run(id, canonical, timestamp);
+      const insert = this.database.prepare('INSERT INTO context_aliases (alias, taxonomy_id) VALUES (?, ?)');
+      for (const alias of aliases) insert.run(alias, id);
+    })();
+    return { id, canonical, aliases: aliases.sort(), createdAt: timestamp };
+  }
+
+  public saveKnowledgeImportBatch(batch: KnowledgeImportBatch): KnowledgeImportBatch {
+    this.database.prepare(`
+      INSERT INTO knowledge_import_batches (
+        id, format, status, total_count, created_count, duplicate_count,
+        rejected_count, errors_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        status = excluded.status,
+        created_count = excluded.created_count,
+        duplicate_count = excluded.duplicate_count,
+        rejected_count = excluded.rejected_count,
+        errors_json = excluded.errors_json
+    `).run(
+      batch.id, batch.format, batch.status, batch.totalCount, batch.createdCount,
+      batch.duplicateCount, batch.rejectedCount, JSON.stringify(batch.errors), batch.createdAt,
+    );
+    return batch;
+  }
+
+  public listKnowledgeImportBatches(): KnowledgeImportBatch[] {
+    return asRows(this.database.prepare('SELECT * FROM knowledge_import_batches ORDER BY created_at DESC').all())
+      .map((row) => ({
+        id: String(row.id),
+        format: row.format as KnowledgeImportBatch['format'],
+        status: row.status as KnowledgeImportBatch['status'],
+        totalCount: Number(row.total_count),
+        createdCount: Number(row.created_count),
+        duplicateCount: Number(row.duplicate_count),
+        rejectedCount: Number(row.rejected_count),
+        errors: parseJson<KnowledgeImportBatch['errors']>(row.errors_json),
+        createdAt: String(row.created_at),
+      }));
+  }
+
+  public listReferenceAssets(): ReferenceAsset[] {
+    return asRows(this.database.prepare('SELECT * FROM reference_assets ORDER BY created_at DESC').all())
+      .map(toReferenceAsset);
+  }
+
+  public getReferenceAssetForKnowledge(knowledgeId: string): ReferenceAsset | null {
+    const row = asRow(this.database.prepare('SELECT * FROM reference_assets WHERE knowledge_id = ?').get(knowledgeId));
+    return row ? toReferenceAsset(row) : null;
+  }
+
+  public createReferenceAsset(asset: ReferenceAsset, duplicate: {
+    knowledgeId: string;
+    kind: KnowledgeItem['duplicateKind'];
+  } | null): ReferenceAsset {
+    return this.database.transaction(() => {
+      this.database.prepare(`
+        INSERT INTO reference_assets (
+          id, knowledge_id, original_name, storage_path, mime_type, byte_size,
+          width, height, sha256, perceptual_hash, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        asset.id, asset.knowledgeId, asset.originalName, asset.storagePath, asset.mimeType,
+        asset.byteSize, asset.width, asset.height, asset.sha256, asset.perceptualHash, asset.createdAt,
+      );
+      if (duplicate) {
+        this.database.prepare(`
+          UPDATE knowledge_items
+          SET lifecycle = 'excluded', lifecycle_reason = 'Duplicate reference asset.',
+              duplicate_of_id = ?, duplicate_kind = ?, updated_at = ?
+          WHERE id = ?
+        `).run(duplicate.knowledgeId, duplicate.kind, asset.createdAt, asset.knowledgeId);
+      }
+      return asset;
+    })();
+  }
+
+  public listTrainingKnowledge(): KnowledgeItem[] {
+    return asRows(this.database.prepare(`
+      SELECT * FROM knowledge_items
+      WHERE lifecycle = 'active' AND duplicate_of_id IS NULL
+        AND rights_status = 'verified'
+        AND json_extract(provenance_json, '$.trainingEligible') = 1
+      ORDER BY id
+    `).all()).map(toKnowledge);
   }
 
   public listRequests(): DesignRequest[] {

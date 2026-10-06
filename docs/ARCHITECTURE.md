@@ -15,7 +15,7 @@ Input Hook -> Research -> Planning -> Creation -> Evaluation
 
 ### Research
 
-`KnowledgeItem`は、見た目のreferenceだけでなくcontexts、concepts、evidence、provenanceを持ちます。検索は入力文、対象、目的、concept、avoid条件の一致を使う決定的な初期rankingです。将来のlearning-to-rankは同じidentifierとcomparison labelを利用します。
+`KnowledgeItem`は、見た目のreferenceだけでなくcontexts、concepts、evidence、provenance、権利状態、lifecycle、重複lineageを持ちます。context aliasはcanonical taxonomyへ正規化し、metadata SHA-256と画像のexact／perceptual hashで重複を識別します。検索はactiveな非重複データだけを対象に、入力文、対象、目的、concept、avoid条件の一致を使う決定的な初期rankingです。学習用snapshotはさらに権利確認済みかつ学習利用可のデータへ限定します。将来のlearning-to-rankは同じidentifierとcomparison labelを利用します。
 
 ### Planning
 
@@ -46,10 +46,10 @@ Figma／HTMLを同時に正本としません。canonical Planを正本、各出
 ## Storage
 
 - SQLite: relationships、status、score、provenance、migration version
-- Filesystem: HTML、Figma plan/script、illustration spec、reports
+- Filesystem: HTML、Figma plan/script、illustration spec、reports、local uploadされたreference image
 - SHA-256: artifact integrity
 - JSON export: data portability
-- JSONL export: evaluation／training pipeline用event
+- JSONL export: evaluation eventと、hash付きtraining dataset snapshot
 - AI run audit: provider、model、token使用量、latency、fallback、error。credential、prompt全文、response全文は保存しない
 
 画像binaryをSQLiteへ保存しません。将来object storageへ移す際はArtifactStoreだけを交換します。

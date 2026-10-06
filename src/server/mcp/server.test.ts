@@ -84,14 +84,63 @@ describe('XDB MCP facade', () => {
         'xdb_classify_design_input',
         'xdb_compare_artifacts',
         'xdb_create_artifacts',
+        'xdb_create_context_taxonomy',
         'xdb_create_plan',
         'xdb_create_plan_family',
         'xdb_create_request',
+        'xdb_get_dataset_snapshot',
         'xdb_get_run_status',
+        'xdb_import_knowledge',
         'xdb_record_evaluation',
         'xdb_record_figma_delivery',
         'xdb_search_knowledge',
+        'xdb_update_knowledge_lifecycle',
       ]);
+
+      const taxonomyResult = await client.callTool({
+        name: 'xdb_create_context_taxonomy',
+        arguments: {
+          canonical: 'product-marketing',
+          aliases: ['PM Site'],
+          idempotencyKey: 'taxonomy:product-marketing:1',
+        },
+      });
+      expect(asRecord(taxonomyResult.structuredContent).replayed).toBe(false);
+      const importResult = await client.callTool({
+        name: 'xdb_import_knowledge',
+        arguments: {
+          format: 'json',
+          items: [{
+            title: 'MCP research reference',
+            summary: 'MCP経由で登録する検証可能な参照情報です。',
+            kind: 'reference',
+            contexts: ['PM Site'],
+            concepts: ['clarity'],
+            evidence: 'MCP importとdataset snapshotの統合検証です。',
+            provenance: {
+              sourceType: 'human', sourceUri: null, license: 'Owned research',
+              rightsStatus: 'verified', trainingEligible: true, capturedAt: '2026-10-06T00:00:00.000Z',
+            },
+          }],
+          idempotencyKey: 'import:mcp-research:1',
+        },
+      });
+      expect(asRecord(asRecord(importResult.structuredContent).batch).createdCount).toBe(1);
+      const imported = repository.listKnowledge().find((item) => item.title === 'MCP research reference');
+      expect(imported?.contexts).toEqual(['product-marketing']);
+      const snapshotResult = await client.callTool({ name: 'xdb_get_dataset_snapshot', arguments: {} });
+      const snapshotKnowledge = asRecord(snapshotResult.structuredContent).knowledge as Array<Record<string, unknown>>;
+      expect(snapshotKnowledge.some((item) => item.id === imported?.id)).toBe(true);
+      const lifecycleResult = await client.callTool({
+        name: 'xdb_update_knowledge_lifecycle',
+        arguments: {
+          knowledgeId: imported?.id,
+          action: 'exclude',
+          reason: 'MCP lifecycle integration test.',
+          idempotencyKey: 'lifecycle:mcp-research:1',
+        },
+      });
+      expect(asRecord(asRecord(lifecycleResult.structuredContent).knowledge).lifecycle).toBe('excluded');
 
       const requestArguments = {
         idempotencyKey: 'request:invoice-flow:1',

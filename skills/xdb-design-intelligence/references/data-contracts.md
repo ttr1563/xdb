@@ -20,9 +20,15 @@ Every knowledge item contains:
 
 - contexts and concepts for retrieval;
 - evidence explaining why the item exists;
-- provenance with source type, source URI, license, capture time, and training eligibility.
+- provenance with source type, source URI, license, rights status, capture time, and training eligibility;
+- lifecycle state (`active | excluded | deleted`) and an auditable reason;
+- a metadata fingerprint plus optional duplicate lineage and import batch ID.
 
-Do not infer `trainingEligible: true` from public availability.
+Normalize context aliases through the canonical taxonomy before fingerprinting. Retrieval accepts only active, non-duplicate records. A training snapshot additionally requires `rightsStatus: verified` and `trainingEligible: true`. Do not infer either field from public availability.
+
+Imports accept a JSON array or one JSON object per JSONL line, with at most 500 candidates per request. Validation is row-scoped; retain the batch counts and indexed errors. Reference images are a separate local multipart upload and never a server-side URL fetch. Only JPEG, PNG, and WebP up to 8 MiB and 40 megapixels are accepted.
+
+`exclude` is reversible. `delete` is not: replace content and provenance with a tombstone, prohibit training, and remove the associated reference file and metadata. Do not restore deleted records.
 
 ## Scores
 
