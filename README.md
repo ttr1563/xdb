@@ -43,6 +43,17 @@ Figma account、既存file、write接続がない場合はrunを`partial`また�
 
 ## 導入方法
 
+XDBはClaude専用ではありません。外部AIなしのWeb UI、Codex、Claude Code、その他のstdio MCP client、HTTP APIから同じ保存データとapplication serviceを利用できます。
+
+| 利用方法 | 外部AI credential | 主な用途 | 詳細 |
+| --- | --- | --- | --- |
+| Web UI + Local planner | 不要 | 人間が入力し、HTML候補を生成・比較 | [Installation](docs/INSTALLATION.md)／[User guide](docs/USER_GUIDE.md) |
+| Codex CLI + MCP | 不要 | agentからResearch、Plan、artifactを操作 | [AI clients](docs/AI_CLIENTS.md) |
+| Claude Code + MCP | MCP接続だけならXDB側API key不要 | agentから同じworkflowを操作 | [AI clients](docs/AI_CLIENTS.md) |
+| その他のstdio MCP client | clientによる | 汎用MCP integration | [AI clients](docs/AI_CLIENTS.md) |
+| HTTP API | 不要 | scriptや既存toolからlocal integration | [Examples](docs/EXAMPLES.md) |
+| Claude planning provider | Anthropic API keyが必要 | XDB内部のPlan生成にClaudeを利用 | [Claude provider](skills/xdb-design-intelligence/references/claude-provider.md) |
+
 ### 必要環境
 
 - Node.js 24以上
@@ -64,6 +75,8 @@ npm run dev
 - Generated artifacts: `.data/artifacts/`
 
 実credentialは`.env`だけへ置き、Gitへ追加しないでください。
+
+OS別手順、初回確認、更新、保存場所は[インストールガイド](docs/INSTALLATION.md)を参照してください。
 
 ### 本番形式でのローカル起動
 
@@ -139,7 +152,7 @@ Claude未接続、外部実行OFF、予算不足、timeout、rate limit、upstre
 
 Claude Codeからrepositoryを開く場合は、rootの[CLAUDE.md](CLAUDE.md)が共通XDB Skillを読み込みます。Claude Codeからも同じAPI・Design Plan・評価契約を使用します。
 
-## Claude Code・CodexからMCPで使う
+## AI clientからMCPで使う
 
 XDBはlocal stdio MCP serverを提供します。HTTP endpointや外部portは開きません。先に依存packageを導入してください。
 
@@ -183,6 +196,8 @@ write toolは8〜128文字の`idempotencyKey`を必須とします。同じkey�
 
 CodexのMCP登録形式は[OpenAI公式MCP手順](https://developers.openai.com/learn/docs-mcp)、Claude Codeのproject-scope承認は[Claude Code公式MCP手順](https://code.claude.com/docs/en/mcp)を参照してください。
 
+その他のstdio MCP client、AI clientなしの利用、接続解除、安全なidempotency運用は[AI client接続ガイド](docs/AI_CLIENTS.md)を参照してください。具体的なpromptとHTTP API例は[実施例](docs/EXAMPLES.md)にあります。
+
 ## 検証
 
 ```bash
@@ -220,6 +235,11 @@ npm run build
 
 ## Documentation
 
+- [Installation](docs/INSTALLATION.md) — 人間向け導入、起動、更新、保存場所
+- [User guide](docs/USER_GUIDE.md) — UI、Research、Create、Review、Export
+- [AI client setup](docs/AI_CLIENTS.md) — Codex、Claude Code、汎用stdio MCP、AIなし
+- [Examples](docs/EXAMPLES.md) — Local、Research、Codex、HTTP API、Figmaの実施例
+- [Troubleshooting](docs/TROUBLESHOOTING.md) — 起動、MCP、reference、Claude、Figma、復旧
 - [Architecture](docs/ARCHITECTURE.md)
 - [System design](docs/SYSTEM_DESIGN.md)
 - [Operations and recovery](docs/OPERATIONS.md)
