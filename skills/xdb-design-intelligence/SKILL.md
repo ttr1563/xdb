@@ -23,6 +23,7 @@ Use XDB as a traceable design workflow, not as an ungrounded layout generator. P
 7. Never mark an external artifact complete when its adapter is disconnected. Preserve the operation plan and report `blocked_external` or `partial`.
 8. Supply a stable, operation-specific `idempotencyKey` to every MCP write tool. Reuse it only when retrying the same payload.
 9. After a Figma write, record the inspected desktop/mobile evidence with `xdb_record_figma_delivery`. Do not mark the run complete from connection status alone.
+10. Before using research data for training, call `xdb_get_dataset_snapshot` and preserve its snapshot hash. Import only rights-attributed JSON/JSONL records; use lifecycle exclusion for reversible quality decisions and deletion only for intentional data erasure.
 
 ## Invariants
 
@@ -31,6 +32,7 @@ Use XDB as a traceable design workflow, not as an ungrounded layout generator. P
 - Keep secrets out of requests, artifacts, logs, and knowledge records.
 - Record the actual planning provider and fallback state. Never describe a local fallback as Claude output.
 - A reference without provenance and usage rights remains `trainingEligible: false`.
+- Reference images are local uploads only. Do not make XDB fetch an arbitrary source URL; validate format and size before storage.
 - Do not average incompatible contexts into one universal style. Match knowledge by audience, objective, concept, platform, and artifact purpose.
 - A generated screenshot is evidence for review, never a replacement for editable Figma structure or semantic HTML.
 

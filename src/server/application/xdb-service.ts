@@ -1,8 +1,10 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import type {
   AiProvider,
   ComparisonInput,
+  ContextTaxonomyInput,
+  ContextTaxonomyTerm,
   CreationRun,
   CreationRunInput,
   DesignPlan,
@@ -13,16 +15,24 @@ import type {
   FigmaDelivery,
   FigmaDeliveryInput,
   InputHookResult,
+  KnowledgeImportBatch,
+  KnowledgeImportInput,
+  KnowledgeInput,
   KnowledgeItem,
+  KnowledgeLifecycleInput,
   PlanFamily,
   PlanFamilyInput,
+  ReferenceAsset,
 } from '../../shared/contracts.js';
+import { knowledgeInputSchema } from '../../shared/contracts.js';
 import { generateDesignPlan } from '../ai/planning.js';
+import { ReferenceAssetStore } from '../artifacts/reference-store.js';
 import type { ArtifactStore } from '../artifacts/store.js';
 import type { RuntimeConfig } from '../config.js';
 import type { Repository } from '../db/repository.js';
 import { executeCreation } from '../domain/creation.js';
 import { classifyDesignInput } from '../domain/intent.js';
+import { knowledgeMetadataFingerprint, perceptualHashDistance } from '../domain/knowledge-quality.js';
 import { rankKnowledge } from '../domain/knowledge-ranking.js';
 import { knowledgeSeeds, styleProfileSeeds } from '../domain/seeds.js';
 
@@ -42,6 +52,7 @@ export interface XdbServiceDependencies {
   repository: Repository;
   config: RuntimeConfig;
   artifactStore: ArtifactStore;
+  referenceAssetStore?: ReferenceAssetStore;
 }
 
 export function seedXdbRepository(repository: Repository): void {
@@ -56,13 +67,178 @@ export function seedXdbRepository(repository: Repository): void {
 export class XdbService {
   public constructor(private readonly dependencies: XdbServiceDependencies) {}
 
+  private get referenceAssetStore(): ReferenceAssetStore {
+    return this.dependencies.referenceAssetStore ?? new ReferenceAssetStore(this.dependencies.config.artifactsPath);
+  }
+
   public classify(input: string): InputHookResult {
     return classifyDesignInput(input);
   }
 
   public searchKnowledge(requestId: string): KnowledgeItem[] {
     const request = this.requireRequest(requestId);
-    return rankKnowledge(request, this.dependencies.repository.listKnowledge());
+    return rankKnowledge(request, this.dependencies.repository.listRetrievableKnowledge());
+  }
+
+  public createKnowledge(input: KnowledgeInput): KnowledgeItem {
+    const contexts = this.dependencies.repository.resolveContexts(input.contexts);
+    const fingerprint = knowledgeMetadataFingerprint(input, contexts);
+    const duplicate = this.dependencies.repository.findKnowledgeByFingerprint(fingerprint);
+    if (duplicate) {
+      throw new ApplicationError('knowledge_duplicate', 409, 'Equivalent knowledge already exists.', {
+        duplicateOfId: duplicate.id,
+      });
+    }
+    return this.dependencies.repository.createKnowledge({ ...input, contexts });
+  }
+
+  public importKnowledge(input: KnowledgeImportInput): KnowledgeImportBatch {
+    const id = randomUUID();
+    const createdAt = new Date().toISOString();
+    let createdCount = 0;
+    let duplicateCount = 0;
+    const errors: KnowledgeImportBatch['errors'] = [];
+    this.dependencies.repository.saveKnowledgeImportBatch({
+      id,
+      format: input.format,
+      status: 'running',
+      totalCount: input.items.length,
+      createdCount: 0,
+      duplicateCount: 0,
+      rejectedCount: 0,
+      errors: [],
+      createdAt,
+    });
+    input.items.forEach((candidate, index) => {
+      const parsed = knowledgeInputSchema.safeParse(candidate);
+      if (!parsed.success) {
+        errors.push({
+          index,
+          code: 'validation_error',
+          message: parsed.error.issues[0]?.message ?? 'Invalid knowledge item.',
+        });
+        return;
+      }
+      const contexts = this.dependencies.repository.resolveContexts(parsed.data.contexts);
+      const fingerprint = knowledgeMetadataFingerprint(parsed.data, contexts);
+      if (this.dependencies.repository.findKnowledgeByFingerprint(fingerprint)) {
+        duplicateCount += 1;
+        return;
+      }
+      this.dependencies.repository.createKnowledge({ ...parsed.data, contexts }, id);
+      createdCount += 1;
+    });
+    const rejectedCount = errors.length;
+    const status: KnowledgeImportBatch['status'] = createdCount === 0 && duplicateCount === 0
+      ? 'failed'
+      : rejectedCount > 0 ? 'partial' : 'completed';
+    return this.dependencies.repository.saveKnowledgeImportBatch({
+      id,
+      format: input.format,
+      status,
+      totalCount: input.items.length,
+      createdCount,
+      duplicateCount,
+      rejectedCount,
+      errors,
+      createdAt,
+    });
+  }
+
+  public async updateKnowledgeLifecycle(id: string, input: KnowledgeLifecycleInput): Promise<KnowledgeItem> {
+    const current = this.dependencies.repository.getKnowledge(id);
+    if (!current) throw new ApplicationError('knowledge_not_found', 404, 'The knowledge item was not found.');
+    if (current.lifecycle === 'deleted') {
+      throw new ApplicationError('knowledge_deleted', 409, 'Deleted knowledge tombstones cannot be changed.');
+    }
+    if (input.action === 'delete') {
+      const asset = this.dependencies.repository.getReferenceAssetForKnowledge(id);
+      if (asset) await this.referenceAssetStore.remove(asset.storagePath);
+    }
+    const updated = this.dependencies.repository.updateKnowledgeLifecycle(id, input.action, input.reason);
+    if (!updated) throw new ApplicationError('knowledge_not_found', 404, 'The knowledge item was not found.');
+    return updated;
+  }
+
+  public createContextTaxonomy(input: ContextTaxonomyInput): ContextTaxonomyTerm {
+    try {
+      return this.dependencies.repository.createContextTaxonomy(input);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('UNIQUE constraint failed')) {
+        throw new ApplicationError('taxonomy_conflict', 409, 'The canonical context or one of its aliases already exists.');
+      }
+      throw error;
+    }
+  }
+
+  public async uploadReferenceAsset(
+    knowledgeId: string,
+    buffer: Buffer,
+    originalName: string,
+    mimeType: string,
+  ): Promise<{ asset: ReferenceAsset; duplicate: { knowledgeId: string; kind: 'exact-asset' | 'perceptual' } | null }> {
+    const knowledge = this.dependencies.repository.getKnowledge(knowledgeId);
+    if (!knowledge) throw new ApplicationError('knowledge_not_found', 404, 'The knowledge item was not found.');
+    if (knowledge.lifecycle === 'deleted') throw new ApplicationError('knowledge_deleted', 409, 'Deleted knowledge cannot receive assets.');
+    if (this.dependencies.repository.getReferenceAssetForKnowledge(knowledgeId)) {
+      throw new ApplicationError('reference_asset_exists', 409, 'The knowledge item already has a reference asset.');
+    }
+    let prepared;
+    try {
+      prepared = await this.referenceAssetStore.prepare(buffer, originalName, mimeType);
+    } catch (error) {
+      throw new ApplicationError('reference_asset_invalid', 400, error instanceof Error ? error.message : 'Invalid image.');
+    }
+    const existingAssets = this.dependencies.repository.listReferenceAssets().filter((asset) => {
+      const item = this.dependencies.repository.getKnowledge(asset.knowledgeId);
+      return item?.lifecycle === 'active' && item.duplicateOfId === null;
+    });
+    const exact = existingAssets.find((asset) => asset.sha256 === prepared.sha256);
+    const perceptual = exact ? undefined : existingAssets.find((asset) =>
+      perceptualHashDistance(asset.perceptualHash, prepared.perceptualHash) <= 4,
+    );
+    const duplicate = exact
+      ? { knowledgeId: exact.knowledgeId, kind: 'exact-asset' as const }
+      : perceptual ? { knowledgeId: perceptual.knowledgeId, kind: 'perceptual' as const } : null;
+    const stored = await this.referenceAssetStore.write(knowledgeId, prepared);
+    const asset: ReferenceAsset = {
+      ...stored,
+      knowledgeId,
+      originalName: prepared.originalName,
+      mimeType: prepared.mimeType,
+      byteSize: prepared.byteSize,
+      width: prepared.width,
+      height: prepared.height,
+      sha256: prepared.sha256,
+      perceptualHash: prepared.perceptualHash,
+      createdAt: new Date().toISOString(),
+    };
+    try {
+      return { asset: this.dependencies.repository.createReferenceAsset(asset, duplicate), duplicate };
+    } catch (error) {
+      await this.referenceAssetStore.remove(stored.storagePath);
+      throw error;
+    }
+  }
+
+  public datasetSnapshot(): {
+    version: 1;
+    createdAt: string;
+    sha256: string;
+    knowledge: KnowledgeItem[];
+    taxonomy: ContextTaxonomyTerm[];
+    referenceAssets: ReferenceAsset[];
+  } {
+    const knowledge = this.dependencies.repository.listTrainingKnowledge();
+    const taxonomy = this.dependencies.repository.listContextTaxonomy();
+    const knowledgeIds = new Set(knowledge.map((item) => item.id));
+    const referenceAssets = this.dependencies.repository.listReferenceAssets()
+      .filter((asset) => knowledgeIds.has(asset.knowledgeId));
+    const createdAt = new Date().toISOString();
+    const sha256 = createHash('sha256')
+      .update(JSON.stringify({ version: 1, knowledge, taxonomy, referenceAssets }))
+      .digest('hex');
+    return { version: 1, createdAt, sha256, knowledge, taxonomy, referenceAssets };
   }
 
   public createRequest(input: DesignRequestInput): DesignRequest {

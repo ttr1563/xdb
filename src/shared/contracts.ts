@@ -75,8 +75,22 @@ export const provenanceSchema = z.object({
   sourceType: z.enum(['human', 'system', 'url', 'figma', 'html', 'generated']),
   sourceUri: z.string().url().nullable().default(null),
   license: z.string().min(1).nullable().default(null),
+  rightsStatus: z.enum(['unverified', 'verified', 'prohibited']),
   trainingEligible: z.boolean().default(false),
   capturedAt: z.string().datetime(),
+}).superRefine((value, context) => {
+  if (['url', 'figma', 'html'].includes(value.sourceType) && value.sourceUri === null) {
+    context.addIssue({ code: 'custom', path: ['sourceUri'], message: 'External sources require a source URI.' });
+  }
+  if (value.rightsStatus === 'verified' && value.sourceType !== 'system' && value.license === null) {
+    context.addIssue({ code: 'custom', path: ['license'], message: 'Verified external or human sources require a license.' });
+  }
+  if (value.trainingEligible && value.rightsStatus !== 'verified') {
+    context.addIssue({ code: 'custom', path: ['trainingEligible'], message: 'Training eligibility requires verified rights.' });
+  }
+  if (value.rightsStatus === 'prohibited' && value.trainingEligible) {
+    context.addIssue({ code: 'custom', path: ['trainingEligible'], message: 'Prohibited sources cannot be used for training.' });
+  }
 });
 export type Provenance = z.infer<typeof provenanceSchema>;
 
@@ -106,21 +120,80 @@ export const illustrationScoreSetSchema = z.object({
 export type IllustrationScoreSet = z.infer<typeof illustrationScoreSetSchema>;
 
 export const knowledgeInputSchema = z.object({
-  title: z.string().min(2).max(140),
-  summary: z.string().min(8).max(2_000),
+  title: z.string().trim().min(2).max(140),
+  summary: z.string().trim().min(8).max(2_000),
   kind: z.enum(['principle', 'pattern', 'reference', 'anti-pattern']),
-  contexts: z.array(z.string().min(1).max(80)).min(1).max(20),
-  concepts: z.array(z.string().min(1).max(80)).min(1).max(20),
-  evidence: z.string().min(4).max(2_000),
+  contexts: z.array(z.string().trim().min(1).max(80)).min(1).max(20),
+  concepts: z.array(z.string().trim().min(1).max(80)).min(1).max(20),
+  evidence: z.string().trim().min(4).max(2_000),
   provenance: provenanceSchema,
 });
 export type KnowledgeInput = z.infer<typeof knowledgeInputSchema>;
 
 export const knowledgeItemSchema = knowledgeInputSchema.extend({
   id: z.string().uuid(),
+  lifecycle: z.enum(['active', 'excluded', 'deleted']),
+  lifecycleReason: z.string().nullable(),
+  metadataFingerprint: z.string().length(64),
+  duplicateOfId: z.string().uuid().nullable(),
+  duplicateKind: z.enum(['metadata', 'exact-asset', 'perceptual']).nullable(),
+  importBatchId: z.string().uuid().nullable(),
   createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  deletedAt: z.string().datetime().nullable(),
 });
 export type KnowledgeItem = z.infer<typeof knowledgeItemSchema>;
+
+export const knowledgeImportInputSchema = z.object({
+  format: z.enum(['json', 'jsonl']),
+  items: z.array(z.unknown()).min(1).max(500),
+});
+export type KnowledgeImportInput = z.infer<typeof knowledgeImportInputSchema>;
+
+export const knowledgeLifecycleInputSchema = z.object({
+  action: z.enum(['exclude', 'restore', 'delete']),
+  reason: z.string().min(4).max(500),
+});
+export type KnowledgeLifecycleInput = z.infer<typeof knowledgeLifecycleInputSchema>;
+
+export const contextTaxonomyInputSchema = z.object({
+  canonical: z.string().trim().min(1).max(80),
+  aliases: z.array(z.string().trim().min(1).max(80)).max(30).default([]),
+});
+export type ContextTaxonomyInput = z.infer<typeof contextTaxonomyInputSchema>;
+
+export interface ContextTaxonomyTerm {
+  id: string;
+  canonical: string;
+  aliases: string[];
+  createdAt: string;
+}
+
+export interface KnowledgeImportBatch {
+  id: string;
+  format: 'json' | 'jsonl';
+  status: 'running' | 'completed' | 'partial' | 'failed';
+  totalCount: number;
+  createdCount: number;
+  duplicateCount: number;
+  rejectedCount: number;
+  errors: Array<{ index: number; code: string; message: string }>;
+  createdAt: string;
+}
+
+export interface ReferenceAsset {
+  id: string;
+  knowledgeId: string;
+  originalName: string;
+  storagePath: string;
+  mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
+  byteSize: number;
+  width: number;
+  height: number;
+  sha256: string;
+  perceptualHash: string;
+  createdAt: string;
+}
 
 export const designRequestInputSchema = z.object({
   prompt: z.string().min(12).max(8_000),

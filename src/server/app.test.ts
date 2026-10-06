@@ -3,9 +3,18 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+import sharp from 'sharp';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { CreationRun, DesignPlan, DesignRequest, FigmaDelivery, PlanFamily } from '../shared/contracts.js';
+import type {
+  CreationRun,
+  DesignPlan,
+  DesignRequest,
+  FigmaDelivery,
+  KnowledgeImportBatch,
+  KnowledgeItem,
+  PlanFamily,
+} from '../shared/contracts.js';
 
 import { buildApp } from './app.js';
 import type { RuntimeConfig } from './config.js';
@@ -13,6 +22,20 @@ import { openDatabase } from './db/database.js';
 import { Repository } from './db/repository.js';
 
 const temporaryDirectories: string[] = [];
+
+function multipartImage(
+  buffer: Buffer,
+  filename = 'reference.png',
+  mimeType = 'image/png',
+): { body: Buffer; contentType: string } {
+  const boundary = '----xdb-test-boundary';
+  const body = Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${mimeType}\r\n\r\n`),
+    buffer,
+    Buffer.from(`\r\n--${boundary}--\r\n`),
+  ]);
+  return { body, contentType: `multipart/form-data; boundary=${boundary}` };
+}
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -68,6 +91,25 @@ function createTestApp(
     },
   });
   return { app, database };
+}
+
+function knowledgePayload(title: string, sourceUri: string, contexts = ['product-marketing']) {
+  return {
+    title,
+    summary: `${title}の検証可能な要約です。`,
+    kind: 'reference',
+    contexts,
+    concepts: ['clarity'],
+    evidence: `${title}を比較評価した根拠です。`,
+    provenance: {
+      sourceType: 'url',
+      sourceUri,
+      license: 'CC BY 4.0',
+      rightsStatus: 'verified',
+      trainingEligible: true,
+      capturedAt: '2026-10-06T00:00:00.000Z',
+    },
+  };
 }
 
 describe('XDB API workflow', () => {
@@ -367,9 +409,180 @@ describe('XDB API workflow', () => {
     expect(statusResponse.json<CreationRun[]>()[0]?.figmaFileKey).toBe('test-file-key');
     const exportResponse = await app.inject({ method: 'GET', url: '/api/export' });
     expect(exportResponse.json<{ version: number; figmaDeliveries: FigmaDelivery[] }>()).toMatchObject({
-      version: 3,
+      version: 4,
       figmaDeliveries: [expect.objectContaining({ runId: run.id, status: 'completed' })],
     });
+    await app.close();
+    database.close();
+  });
+
+  it('imports rights-aware knowledge, canonicalizes contexts, and preserves tombstones', async () => {
+    const { app, database } = createTestApp();
+    const taxonomyResponse = await app.inject({
+      method: 'POST',
+      url: '/api/knowledge/taxonomy',
+      payload: { canonical: 'product-marketing', aliases: ['PM Site'] },
+    });
+    expect(taxonomyResponse.statusCode).toBe(201);
+
+    const firstPayload = knowledgePayload('Evidence-led hero', 'https://example.com/reference-one', ['PM Site']);
+    const firstResponse = await app.inject({ method: 'POST', url: '/api/knowledge', payload: firstPayload });
+    expect(firstResponse.statusCode, firstResponse.body).toBe(201);
+    const first = firstResponse.json<KnowledgeItem>();
+    const firstFingerprint = first.metadataFingerprint;
+    expect(first.contexts).toEqual(['product-marketing']);
+    expect(first.lifecycle).toBe('active');
+
+    const duplicateResponse = await app.inject({ method: 'POST', url: '/api/knowledge', payload: firstPayload });
+    expect(duplicateResponse.statusCode).toBe(409);
+    expect(duplicateResponse.json()).toEqual(expect.objectContaining({
+      error: 'knowledge_duplicate',
+      duplicateOfId: first.id,
+    }));
+
+    const invalidTraining = await app.inject({
+      method: 'POST',
+      url: '/api/knowledge',
+      payload: {
+        ...knowledgePayload('Unverified source', 'https://example.com/unverified'),
+        provenance: {
+          sourceType: 'url', sourceUri: 'https://example.com/unverified', license: null,
+          rightsStatus: 'unverified', trainingEligible: true, capturedAt: '2026-10-06T00:00:00.000Z',
+        },
+      },
+    });
+    expect(invalidTraining.statusCode).toBe(400);
+
+    const importedPayload = knowledgePayload('Responsive evidence', 'https://example.com/reference-two');
+    const importResponse = await app.inject({
+      method: 'POST',
+      url: '/api/knowledge/import',
+      payload: { format: 'json', items: [importedPayload, importedPayload, { title: 'invalid' }] },
+    });
+    expect(importResponse.statusCode).toBe(201);
+    expect(importResponse.json<KnowledgeImportBatch>()).toMatchObject({
+      status: 'partial', totalCount: 3, createdCount: 1, duplicateCount: 1, rejectedCount: 1,
+    });
+    const jsonlItem = knowledgePayload('JSONL reference', 'https://example.com/reference-jsonl');
+    const jsonlResponse = await app.inject({
+      method: 'POST',
+      url: '/api/knowledge/import',
+      headers: { 'content-type': 'application/x-ndjson' },
+      payload: `${JSON.stringify(jsonlItem)}\n{invalid-json}\n`,
+    });
+    expect(jsonlResponse.statusCode).toBe(201);
+    expect(jsonlResponse.json<KnowledgeImportBatch>()).toMatchObject({
+      format: 'jsonl', status: 'partial', createdCount: 1, rejectedCount: 1,
+    });
+
+    const excludeResponse = await app.inject({
+      method: 'PATCH',
+      url: `/api/knowledge/${first.id}/lifecycle`,
+      payload: { action: 'exclude', reason: 'Not applicable to the current dataset.' },
+    });
+    expect(excludeResponse.json<KnowledgeItem>().lifecycle).toBe('excluded');
+    const snapshotBeforeDelete = await app.inject({ method: 'GET', url: '/api/export/dataset.jsonl' });
+    expect(snapshotBeforeDelete.body).not.toContain(first.id);
+    expect(snapshotBeforeDelete.body).toContain('Responsive evidence');
+
+    const deleteResponse = await app.inject({
+      method: 'PATCH',
+      url: `/api/knowledge/${first.id}/lifecycle`,
+      payload: { action: 'delete', reason: 'Source owner requested deletion.' },
+    });
+    expect(deleteResponse.json<KnowledgeItem>()).toMatchObject({
+      id: first.id,
+      title: '[deleted]',
+      lifecycle: 'deleted',
+      provenance: { sourceUri: null, rightsStatus: 'prohibited', trainingEligible: false },
+    });
+    expect(deleteResponse.json<KnowledgeItem>().metadataFingerprint).not.toBe(firstFingerprint);
+    await app.close();
+    database.close();
+  });
+
+  it('validates local images, detects exact and perceptual duplicates, and deletes asset data', async () => {
+    const { app, database } = createTestApp();
+    const firstResponse = await app.inject({
+      method: 'POST', url: '/api/knowledge',
+      payload: knowledgePayload('Reference asset one', 'https://example.com/asset-one'),
+    });
+    const secondResponse = await app.inject({
+      method: 'POST', url: '/api/knowledge',
+      payload: knowledgePayload('Reference asset two', 'https://example.com/asset-two'),
+    });
+    const thirdResponse = await app.inject({
+      method: 'POST', url: '/api/knowledge',
+      payload: knowledgePayload('Reference asset three', 'https://example.com/asset-three'),
+    });
+    const fourthResponse = await app.inject({
+      method: 'POST', url: '/api/knowledge',
+      payload: knowledgePayload('Reference asset four', 'https://example.com/asset-four'),
+    });
+    const first = firstResponse.json<KnowledgeItem>();
+    const second = secondResponse.json<KnowledgeItem>();
+    const third = thirdResponse.json<KnowledgeItem>();
+    const fourth = fourthResponse.json<KnowledgeItem>();
+    const image = await sharp({
+      create: { width: 16, height: 16, channels: 3, background: { r: 32, g: 96, b: 64 } },
+    }).png().toBuffer();
+    const multipart = multipartImage(image);
+    const firstAsset = await app.inject({
+      method: 'POST', url: `/api/knowledge/${first.id}/asset`,
+      headers: { 'content-type': multipart.contentType }, payload: multipart.body,
+    });
+    expect(firstAsset.statusCode, firstAsset.body).toBe(201);
+    expect(firstAsset.json<{ duplicate: unknown }>().duplicate).toBeNull();
+    const secondAsset = await app.inject({
+      method: 'POST', url: `/api/knowledge/${second.id}/asset`,
+      headers: { 'content-type': multipart.contentType }, payload: multipart.body,
+    });
+    expect(secondAsset.statusCode, secondAsset.body).toBe(201);
+    expect(secondAsset.json<{ duplicate: { knowledgeId: string; kind: string } }>().duplicate).toEqual({
+      knowledgeId: first.id,
+      kind: 'exact-asset',
+    });
+    const differentBytesSameShape = await sharp({
+      create: { width: 16, height: 16, channels: 3, background: { r: 48, g: 112, b: 80 } },
+    }).png().toBuffer();
+    const perceptualMultipart = multipartImage(differentBytesSameShape);
+    const thirdAsset = await app.inject({
+      method: 'POST', url: `/api/knowledge/${third.id}/asset`,
+      headers: { 'content-type': perceptualMultipart.contentType }, payload: perceptualMultipart.body,
+    });
+    expect(thirdAsset.statusCode, thirdAsset.body).toBe(201);
+    expect(thirdAsset.json<{ duplicate: { knowledgeId: string; kind: string } }>().duplicate).toEqual({
+      knowledgeId: first.id,
+      kind: 'perceptual',
+    });
+    const invalidMime = multipartImage(image, 'reference.jpg', 'image/jpeg');
+    const invalidMimeResponse = await app.inject({
+      method: 'POST', url: `/api/knowledge/${fourth.id}/asset`,
+      headers: { 'content-type': invalidMime.contentType }, payload: invalidMime.body,
+    });
+    expect(invalidMimeResponse.statusCode).toBe(400);
+    expect(invalidMimeResponse.json()).toEqual(expect.objectContaining({ error: 'reference_asset_invalid' }));
+    const knowledge = (await app.inject({ method: 'GET', url: '/api/knowledge' })).json<KnowledgeItem[]>();
+    expect(knowledge.find((item) => item.id === second.id)).toMatchObject({
+      lifecycle: 'excluded', duplicateOfId: first.id, duplicateKind: 'exact-asset',
+    });
+    expect(knowledge.find((item) => item.id === third.id)).toMatchObject({
+      lifecycle: 'excluded', duplicateOfId: first.id, duplicateKind: 'perceptual',
+    });
+    const secondAssetRecord = secondAsset.json<{ asset: { storagePath: string } }>().asset;
+    expect((await app.inject({
+      method: 'GET', url: `/artifacts/${secondAssetRecord.storagePath}`,
+    })).statusCode).toBe(200);
+    const deleteResponse = await app.inject({
+      method: 'PATCH', url: `/api/knowledge/${second.id}/lifecycle`,
+      payload: { action: 'delete', reason: 'Delete duplicate reference data.' },
+    });
+    expect(deleteResponse.statusCode).toBe(200);
+    expect((await app.inject({
+      method: 'GET', url: `/artifacts/${secondAssetRecord.storagePath}`,
+    })).statusCode).toBe(404);
+    const assets = (await app.inject({ method: 'GET', url: '/api/knowledge/assets' })).json<Array<{ knowledgeId: string }>>();
+    expect(assets.some((asset) => asset.knowledgeId === second.id)).toBe(false);
     await app.close();
     database.close();
   });

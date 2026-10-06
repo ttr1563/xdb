@@ -6,11 +6,14 @@ import { z } from 'zod';
 import {
   aiProviderSchema,
   comparisonInputSchema,
+  contextTaxonomyInputSchema,
   creationRunInputSchema,
   designRequestInputSchema,
   evaluationInputSchema,
   figmaDeliveryInputSchema,
   inputHookSchema,
+  knowledgeImportInputSchema,
+  knowledgeLifecycleInputSchema,
   planFamilyInputSchema,
   type Artifact,
 } from '../../shared/contracts.js';
@@ -149,6 +152,69 @@ export function createXdbMcpServer({ service, repository }: McpDependencies): Mc
       annotations: readAnnotations,
     },
     ({ requestId }) => textResult(jsonRecord({ requestId, items: service.searchKnowledge(requestId) })),
+  );
+
+  server.registerTool(
+    'xdb_get_dataset_snapshot',
+    {
+      title: 'Get the training-eligible dataset snapshot',
+      description: 'Return only active, rights-verified, non-duplicate knowledge and its taxonomy.',
+      inputSchema: z.object({}),
+      annotations: readAnnotations,
+    },
+    () => textResult(jsonRecord(service.datasetSnapshot())),
+  );
+
+  server.registerTool(
+    'xdb_import_knowledge',
+    {
+      title: 'Import contextual design knowledge',
+      description: 'Validate and import JSON or parsed JSONL metadata with duplicate reporting.',
+      inputSchema: knowledgeImportInputSchema.extend({ idempotencyKey: idempotencyKeySchema }),
+      annotations: writeAnnotations,
+    },
+    async ({ idempotencyKey, ...input }) => {
+      const operation = await executeIdempotent(repository, 'xdb_import_knowledge', idempotencyKey, input, () =>
+        jsonRecord({ batch: service.importKnowledge(input) }),
+      );
+      return textResult(withReplay(operation.result, operation.replayed));
+    },
+  );
+
+  server.registerTool(
+    'xdb_update_knowledge_lifecycle',
+    {
+      title: 'Exclude, restore, or tombstone knowledge',
+      description: 'Change knowledge retrieval lifecycle while preserving lineage.',
+      inputSchema: knowledgeLifecycleInputSchema.extend({
+        knowledgeId: z.string().uuid(),
+        idempotencyKey: idempotencyKeySchema,
+      }),
+      annotations: writeAnnotations,
+    },
+    async ({ knowledgeId, idempotencyKey, ...input }) => {
+      const payload = { knowledgeId, ...input };
+      const operation = await executeIdempotent(repository, 'xdb_update_knowledge_lifecycle', idempotencyKey, payload, async () =>
+        jsonRecord({ knowledge: await service.updateKnowledgeLifecycle(knowledgeId, input) }),
+      );
+      return textResult(withReplay(operation.result, operation.replayed));
+    },
+  );
+
+  server.registerTool(
+    'xdb_create_context_taxonomy',
+    {
+      title: 'Create a canonical context and aliases',
+      description: 'Add one context taxonomy term without merging incompatible contexts.',
+      inputSchema: contextTaxonomyInputSchema.extend({ idempotencyKey: idempotencyKeySchema }),
+      annotations: writeAnnotations,
+    },
+    async ({ idempotencyKey, ...input }) => {
+      const operation = await executeIdempotent(repository, 'xdb_create_context_taxonomy', idempotencyKey, input, () =>
+        jsonRecord({ taxonomy: service.createContextTaxonomy(input) }),
+      );
+      return textResult(withReplay(operation.result, operation.replayed));
+    },
   );
 
   server.registerTool(

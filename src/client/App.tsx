@@ -11,6 +11,7 @@ import type {
   Evaluation,
   FigmaDelivery,
   KnowledgeItem,
+  KnowledgeImportBatch,
   OutputMode,
   ScoreSet,
   StyleProfile,
@@ -242,7 +243,9 @@ function ResearchStudio({ data, refresh }: { data: AppData; refresh: () => Promi
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     try {
-      await api('/api/knowledge', {
+      const sourceUri = String(form.get('sourceUri') ?? '').trim() || null;
+      const license = String(form.get('license') ?? '').trim() || null;
+      const knowledge = await api<KnowledgeItem>('/api/knowledge', {
         method: 'POST',
         body: JSON.stringify({
           title: String(form.get('title')),
@@ -251,9 +254,28 @@ function ResearchStudio({ data, refresh }: { data: AppData; refresh: () => Promi
           contexts: String(form.get('contexts')).split(',').map((value) => value.trim()).filter(Boolean),
           concepts: String(form.get('concepts')).split(',').map((value) => value.trim()).filter(Boolean),
           evidence: String(form.get('evidence')),
-          provenance: { sourceType: 'human', sourceUri: null, license: null, trainingEligible: false, capturedAt: new Date().toISOString() },
+          provenance: {
+            sourceType: form.get('sourceType'),
+            sourceUri,
+            license,
+            rightsStatus: form.get('rightsStatus'),
+            trainingEligible: form.get('trainingEligible') === 'on',
+            capturedAt: new Date().toISOString(),
+          },
         }),
       });
+      const asset = form.get('asset');
+      if (asset instanceof File && asset.size > 0) {
+        const body = new FormData();
+        body.append('file', asset);
+        try {
+          await api(`/api/knowledge/${knowledge.id}/asset`, { method: 'POST', body });
+        } catch (error) {
+          setMessage(`ナレッジは登録済みですが、参照画像は保存できませんでした: ${error instanceof Error ? error.message : 'unknown error'}`);
+          await refresh();
+          return;
+        }
+      }
       event.currentTarget.reset();
       setMessage('ナレッジを登録しました。出典・権利確認までは学習対象外です。');
       await refresh();
@@ -261,10 +283,43 @@ function ResearchStudio({ data, refresh }: { data: AppData; refresh: () => Promi
       setMessage(error instanceof Error ? error.message : '登録に失敗しました。');
     }
   }
+  async function importMetadata(file: File): Promise<void> {
+    try {
+      const content = await file.text();
+      const parsedJson = file.name.toLocaleLowerCase().endsWith('.jsonl') ? null : JSON.parse(content) as unknown;
+      const jsonItems = parsedJson && typeof parsedJson === 'object' && 'items' in parsedJson
+        ? (parsedJson as { items: unknown }).items
+        : parsedJson;
+      const batch = file.name.toLocaleLowerCase().endsWith('.jsonl')
+        ? await api<KnowledgeImportBatch>('/api/knowledge/import', {
+          method: 'POST', body: content, headers: { 'Content-Type': 'application/x-ndjson' },
+        })
+        : await api<KnowledgeImportBatch>('/api/knowledge/import', {
+          method: 'POST', body: JSON.stringify({ format: 'json', items: jsonItems }),
+        });
+      setMessage(`Import ${batch.status}: ${batch.createdCount}件作成、${batch.duplicateCount}件重複、${batch.rejectedCount}件拒否。`);
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Importに失敗しました。');
+    }
+  }
+  async function changeLifecycle(item: KnowledgeItem, action: 'exclude' | 'restore' | 'delete'): Promise<void> {
+    if (action === 'delete' && !window.confirm('本文と出典を消去し、復元不能なtombstoneへ変更しますか？')) return;
+    try {
+      await api(`/api/knowledge/${item.id}/lifecycle`, {
+        method: 'PATCH',
+        body: JSON.stringify({ action, reason: action === 'delete' ? 'User requested deletion.' : `User requested ${action}.` }),
+      });
+      setMessage(`${item.title}を${action}へ変更しました。`);
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '状態変更に失敗しました。');
+    }
+  }
   return (
     <div className="view-stack"><header className="page-heading"><div><p className="kicker">RESEARCH / 03</p><h1>良い理由と、<br />使える文脈を残す。</h1></div><p>参考画像だけでなく、要件・評価理由・出典を一つの知識として記録します。</p></header>
-      <section className="research-layout"><div className="knowledge-list">{data.knowledge.map((item) => <article className="knowledge-card" key={item.id}><div><StatusBadge status={item.kind} /><time>{formatDate(item.createdAt)}</time></div><h2>{item.title}</h2><p>{item.summary}</p><div className="tag-row">{[...item.contexts, ...item.concepts].slice(0, 6).map((tag) => <span key={tag}>{tag}</span>)}</div><footer><span>根拠</span>{item.evidence}</footer></article>)}</div>
-      <form className="panel compact-form" onSubmit={(event) => void submit(event)}><p className="kicker">ADD SIGNAL</p><h2>ナレッジを登録</h2><label>タイトル<input name="title" required minLength={2} /></label><label>要約<textarea name="summary" required minLength={8} rows={3} /></label><label>種別<select name="kind"><option value="pattern">pattern</option><option value="principle">principle</option><option value="reference">reference</option><option value="anti-pattern">anti-pattern</option></select></label><label>文脈<input name="contexts" placeholder="landing-page, finance" required /></label><label>コンセプト<input name="concepts" placeholder="信頼感, clarity" required /></label><label>根拠<textarea name="evidence" required minLength={4} rows={3} /></label><button className="primary-button">登録する</button>{message && <p className="form-message">{message}</p>}</form></section>
+      <section className="research-layout"><div className="knowledge-list">{data.knowledge.map((item) => <article className={`knowledge-card knowledge-card--${item.lifecycle}`} key={item.id}><div><span><StatusBadge status={item.kind} /> <StatusBadge status={item.lifecycle} /></span><time>{formatDate(item.createdAt)}</time></div><h2>{item.title}</h2><p>{item.summary}</p><div className="tag-row">{[...item.contexts, ...item.concepts].slice(0, 6).map((tag) => <span key={tag}>{tag}</span>)}</div><footer><span>根拠 · rights {item.provenance.rightsStatus}</span>{item.evidence}{item.duplicateOfId && <small>Duplicate: {item.duplicateKind} → {item.duplicateOfId}</small>}<div className="knowledge-actions">{item.lifecycle === 'active' && <button onClick={() => void changeLifecycle(item, 'exclude')}>Exclude</button>}{item.lifecycle === 'excluded' && <button onClick={() => void changeLifecycle(item, 'restore')}>Restore</button>}{item.lifecycle !== 'deleted' && <button onClick={() => void changeLifecycle(item, 'delete')}>Delete</button>}</div></footer></article>)}</div>
+      <form className="panel compact-form" onSubmit={(event) => void submit(event)}><p className="kicker">ADD SIGNAL</p><h2>ナレッジを登録</h2><label>JSON / JSONL import<input type="file" accept=".json,.jsonl,application/json,application/x-ndjson" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importMetadata(file); }} /></label><label>タイトル<input name="title" required minLength={2} /></label><label>要約<textarea name="summary" required minLength={8} rows={3} /></label><label>種別<select name="kind"><option value="pattern">pattern</option><option value="principle">principle</option><option value="reference">reference</option><option value="anti-pattern">anti-pattern</option></select></label><label>文脈<input name="contexts" placeholder="landing-page, finance" required /></label><label>コンセプト<input name="concepts" placeholder="信頼感, clarity" required /></label><label>根拠<textarea name="evidence" required minLength={4} rows={3} /></label><label>Source type<select name="sourceType"><option value="human">human</option><option value="url">url</option><option value="figma">figma</option><option value="html">html</option><option value="generated">generated</option></select></label><label>Source URI<input name="sourceUri" type="url" /></label><label>License<input name="license" placeholder="MIT, CC BY 4.0, owned…" /></label><label>Rights<select name="rightsStatus"><option value="unverified">unverified</option><option value="verified">verified</option><option value="prohibited">prohibited</option></select></label><label className="checkbox-label"><input name="trainingEligible" type="checkbox" /> Training datasetへ利用可能</label><label>Reference image<input name="asset" type="file" accept="image/jpeg,image/png,image/webp" /></label><button className="primary-button">登録する</button>{message && <p className="form-message">{message}</p>}</form></section>
     </div>
   );
 }

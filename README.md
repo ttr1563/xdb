@@ -25,7 +25,7 @@ Design Request
 
 | 機能 | 内容 | 外部接続なし |
 | --- | --- | --- |
-| Research | 評価理由、文脈、コンセプト、出典、利用許可をナレッジとして保存 | 利用可能 |
+| Research | 評価理由、文脈、コンセプト、出典、利用許可を保存。JSON/JSONL import、taxonomy、重複検出、除外・削除に対応 | 利用可能 |
 | Planning | LocalまたはClaudeで根拠付きDesign Planを生成。Localでは3戦略の比較候補を生成 | Localのみ利用可能 |
 | HTML | semantic／responsiveなstandalone HTMLを生成・比較 | 利用可能 |
 | Figma | operation plan/scriptを生成し、接続済みagentがnative nodeを作成、検証証跡を保存 | plan生成まで可能 |
@@ -83,6 +83,33 @@ npm start
 5. HTML previewまたはFigma operation planを確認する。Figma出力では対象file keyを指定し、接続済みagentでdeliveryを実行・検証する。
 6. Evaluateで同じPlan Familyの互換候補を比較し、採否、スコア、比較理由を保存する。
 
+### Researchデータを登録する
+
+Research画面では1件ずつ登録するほか、JSON配列または1行1件のJSONLを最大500件までimportできます。各行は独立して検証され、batch履歴に作成・重複・拒否件数と行番号別エラーを残します。外部URLから画像を自動取得せず、参照画像は手元のJPEG／PNG／WebP（8 MiB以下、40 megapixels以下）だけを明示uploadします。
+
+```json
+[
+  {
+    "title": "Evidence-led hero",
+    "summary": "比較評価で根拠が確認できたHeroパターンです。",
+    "kind": "reference",
+    "contexts": ["product-marketing"],
+    "concepts": ["clarity"],
+    "evidence": "CTA理解度の比較評価で改善を確認。",
+    "provenance": {
+      "sourceType": "url",
+      "sourceUri": "https://example.com/reference",
+      "license": "CC BY 4.0",
+      "rightsStatus": "verified",
+      "trainingEligible": true,
+      "capturedAt": "2026-10-06T00:00:00.000Z"
+    }
+  }
+]
+```
+
+公開されている素材でも利用許諾を推定しません。`trainingEligible: true`には`rightsStatus: verified`とlicenseが必要です。通常検索はactiveな非重複データ、学習用snapshotはさらに権利確認済みかつ学習利用可のデータだけを含みます。`exclude`は復元可能、`delete`は本文・出典・画像を消去した復元不能tombstoneです。
+
 ## Claudeを使う
 
 `.env`へ次を設定します。値はGitへ追加しないでください。
@@ -133,8 +160,8 @@ codex mcp list
 
 公開tool：
 
-- read: `xdb_classify_design_input`、`xdb_search_knowledge`、`xdb_get_run_status`
-- write: `xdb_create_request`、`xdb_create_plan`、`xdb_create_plan_family`、`xdb_create_artifacts`、`xdb_record_figma_delivery`、`xdb_record_evaluation`、`xdb_compare_artifacts`
+- read: `xdb_classify_design_input`、`xdb_search_knowledge`、`xdb_get_dataset_snapshot`、`xdb_get_run_status`
+- write: `xdb_import_knowledge`、`xdb_update_knowledge_lifecycle`、`xdb_create_context_taxonomy`、`xdb_create_request`、`xdb_create_plan`、`xdb_create_plan_family`、`xdb_create_artifacts`、`xdb_record_figma_delivery`、`xdb_record_evaluation`、`xdb_compare_artifacts`
 - resource: `xdb://artifact/{artifactId}`
 
 write toolは8〜128文字の`idempotencyKey`を必須とします。同じkeyとpayloadは完了済みの場合だけ保存結果を返し、別payloadへの再利用は拒否します。実行中、失敗済み、またはprocess停止等で結果不明になったkeyからdomain処理を自動再実行しません。保存状態を照合し、安全を確認した場合だけ新しいkeyで明示的に実行してください。`xdb_create_artifacts`はHTMLとFigma operation planをlocal生成し、外部write後の検証済み証跡は`xdb_record_figma_delivery`で保存します。
@@ -167,6 +194,7 @@ npm run build
 
 - `GET /api/export`: 全domain dataのversion付きJSON
 - `GET /api/export/evaluations.jsonl`: 評価履歴のJSONL
+- `GET /api/export/dataset.jsonl`: snapshot header、権利確認済みknowledge、taxonomy、参照画像metadataの決定的な学習用snapshot
 - `GET /api/ai-runs`: AI provider、model、token使用量、latency、試行回数、fallback、error codeの監査履歴
 - `GET/POST /api/figma-deliveries`: Figma外部writeのnode ID、構造監査、screenshot確認、status
 - local stdio MCP: HTTP APIと同じapplication serviceをClaude Code・Codexから呼び出す

@@ -106,7 +106,10 @@ Domain層はHTTP、Figma node、Anthropic response shapeへ直接依存させま
 | Entity | Role | Important invariants |
 | --- | --- | --- |
 | `DesignRequest` | 人間の要望と生成条件 | audience、objective、concepts、avoid、output modeを必須化 |
-| `KnowledgeItem` | 再利用可能な判断根拠 | contexts、concepts、evidence、provenanceを保持 |
+| `KnowledgeItem` | 再利用可能な判断根拠 | provenance、rights、lifecycle、fingerprint、duplicate lineageを保持 |
+| `ContextTaxonomyTerm` | retrieval文脈の正規語彙 | canonicalとaliasを一意に対応付ける |
+| `KnowledgeImportBatch` | JSON／JSONL取込監査 | 行単位の作成・重複・拒否とerror indexを保持 |
+| `ReferenceAsset` | local参照画像metadata | knowledgeと1対1、SHA-256とperceptual hashを保持 |
 | `StyleProfile` | illustrationの一貫性定義 | medium、traits、palette、composition、forbidden traitsをversion管理 |
 | `DesignPlan` | canonical design specification | request、knowledge、generation providerへ追跡可能 |
 | `CreationRun` | Planからの出力試行 | requested outputとstatusを保持 |
@@ -129,6 +132,9 @@ CreationRun   1 --- n FigmaDelivery
 Artifact      1 --- n Evaluation
 StyleProfile  1 --- n DesignPlan.illustration
 KnowledgeItem n --- n DesignPlan (knowledgeIds)
+KnowledgeImportBatch 1 --- n KnowledgeItem
+ContextTaxonomyTerm 1 --- n context aliases
+KnowledgeItem 1 --- 0..1 ReferenceAsset
 ```
 
 `knowledgeIds`は現在Plan JSON内に保持します。検索・分析量が増え、joinや部分更新が必要になった段階で中間tableへmigrationします。初期段階で二重の正本は持ちません。
@@ -179,6 +185,18 @@ fallbackした`DesignPlan.generation.provider`は`local`、`fallbackUsed`は`tru
 
 Rankingは現在決定的です。将来modelを導入しても、取得したknowledge IDとmodel versionをPlan／runへ残します。
 
+### 8.1.1 Research ingestion and dataset quality
+
+1. JSON配列、JSONL、または単件入力をZodで検証する。importは最大500件で、無効行があっても有効行を継続し、batchへindex付きerrorを保存する。
+2. contextをNFKC・lowercaseで正規化し、aliasをcanonical taxonomyへ解決する。未登録語はcanonical termとして追加する。
+3. title、summary、kind、正規化済みcontexts、concepts、evidence、provenanceからmetadata SHA-256を作り、既存非削除recordとの一致を重複として扱う。
+4. 参照画像はserver-side URL fetchを行わず、local multipart uploadだけを受け付ける。JPEG／PNG／WebP、8 MiB以下、40 megapixels以下、申告MIMEと実形式一致を検証する。
+5. 画像SHA-256一致をexact duplicate、64-bit difference hashのHamming distance 4以下をperceptual duplicateとし、canonicalなactive recordへlineageを張って新recordを自動除外する。
+6. retrieval対象は`active`かつ非重複。training snapshot対象はさらに`rightsStatus = verified`かつ`trainingEligible = true`だけとする。
+7. `exclude`は理由付きで復元可能。`delete`は本文・出典をtombstoneへ置換し、参照画像fileとmetadataを消去して復元不可とする。
+
+Import batchは開始時に`running`を保存し、正常終了時に`completed | partial | failed`へ更新します。process停止で`running`が残った場合は自動再開せず、作成済みitemとbatch IDを照合してから再importします。fingerprint dedupeにより同一metadataの再投入は重複として記録されます。
+
 ### 8.2 Local Planning
 
 1. Design Request、ranked knowledge、Style Profileを入力する。
@@ -222,7 +240,7 @@ Claudeへserver-owned ID、権限、実行成功状態を決めさせません�
 4. comparisonから直接普遍ルールを作らず、request文脈と共にResearchへ返す。
 5. 十分な反復で安定した傾向だけをpattern／principle候補へ昇格する。
 
-現在の比較APIは、preferred artifactがA/BのどちらかであることをDB制約で保証します。application層では、異なるartifact hash／Plan fingerprint、同一Request／Plan Family、HTMLによる共通responsive viewport、同じsection type構成によるcontent completenessを検証します。比較結果はRequest、candidate lineage、生成provider／model、参照knowledgeと共にexportしますが、context taxonomyとdataset qualityを整備するまではretrievalや機械学習labelへ自動反映しません。
+現在の比較APIは、preferred artifactがA/BのどちらかであることをDB制約で保証します。application層では、異なるartifact hash／Plan fingerprint、同一Request／Plan Family、HTMLによる共通responsive viewport、同じsection type構成によるcontent completenessを検証します。比較結果はRequest、candidate lineage、生成provider／model、参照knowledgeと共にexportします。比較結果からKnowledgeItemやtraining labelを自動作成する処理はまだ行わず、人間がprovenanceと権利を確認したResearch登録を境界とします。
 
 ## 9. API design
 
@@ -235,6 +253,10 @@ Claudeへserver-owned ID、権限、実行成功状態を決めさせません�
 | `GET /api/dashboard` | Request、Plan、Run、評価等の集計 |
 | `POST /api/hooks/design-input` | design intent判定 |
 | `GET/POST /api/knowledge` | knowledge取得・登録 |
+| `POST /api/knowledge/import`、`GET /api/knowledge/imports` | JSON／JSONL取込とbatch監査 |
+| `PATCH /api/knowledge/:id/lifecycle` | 除外、復元、tombstone削除 |
+| `GET/POST /api/knowledge/taxonomy` | canonical contextとalias管理 |
+| `GET /api/knowledge/assets`、`POST /api/knowledge/:id/asset` | local参照画像metadata取得・upload |
 | `GET/POST /api/style-profiles` | Style Profile取得・登録 |
 | `GET/POST /api/requests` | Design Request取得・登録 |
 | `GET/POST /api/plans` | Plan取得・provider指定生成 |
@@ -246,6 +268,7 @@ Claudeへserver-owned ID、権限、実行成功状態を決めさせません�
 | `GET/POST /api/comparisons` | 比較評価取得・登録 |
 | `GET /api/export` | version付き全domain export |
 | `GET /api/export/evaluations.jsonl` | 評価event export |
+| `GET /api/export/dataset.jsonl` | hash付きtraining dataset snapshot |
 
 生成artifactは`/artifacts/`配下でlocal previewへ配信します。public deploymentでは認証・公開範囲・cache policyを別途定義するまで、この経路を外部公開しません。
 
@@ -257,6 +280,10 @@ MCPは新しい正本やbusiness logicを持たず、HTTPと同じ`XdbService`�
 
 - `xdb_classify_design_input`
 - `xdb_search_knowledge`
+- `xdb_get_dataset_snapshot`
+- `xdb_import_knowledge`
+- `xdb_update_knowledge_lifecycle`
+- `xdb_create_context_taxonomy`
 - `xdb_create_request`
 - `xdb_create_plan`
 - `xdb_create_plan_family`
@@ -324,7 +351,7 @@ DesignRequest
 ### Current
 
 - SQLite: relation、status、score、provenance、audit。
-- Filesystem: HTML、JSON、Figma script、report。Figma node証跡はSQLiteの`figma_deliveries`へ保存する。
+- Filesystem: HTML、JSON、Figma script、report、reference image。Figma node証跡とreference metadataはSQLiteへ保存する。
 - SHA-256: artifact integrity。
 - `schema_migrations`: transaction単位のforward migration。
 
@@ -353,7 +380,9 @@ secretやaccount固有値を`design.config.json`へ置きません。環境変�
 - promptやreferenceに個人情報・機密情報が含まれる可能性を前提に、外部provider送信を明示選択にする。
 - external base URLはHTTPSかつ`allowedBaseUrls`の完全一致を通過した後だけcredentialを送信する。
 - provenanceにsource URI、license、captured time、training eligibilityを保持する。
+- `rightsStatus = verified`でないrecordはtraining対象へ入れず、public availabilityから権利を推定しない。
 - `trainingEligible`の既定はfalseとする。
+- local uploadの画像だけを受け付け、arbitrary URL fetch、SVG、申告MIME不一致を拒否する。
 - XDBのMIT Licenseは、登録された画像、font、Figma component、AI出力の第三者権利を許諾しない。
 - public化前にauthentication、authorization、rate limit、request size、audit、deletion workflowを追加する。
 
@@ -388,6 +417,10 @@ retryはidempotentなPlanning read／generationに限定し、Figma writeを自�
 | Figma途中失敗 | node IDsとerrorを記録 | retry前にtarget inspection |
 | Figma完了の重複登録 | 既存deliveryを照合し、異なるoperationは拒否 | 409 conflict |
 | Image provider未接続 | Illustration Specだけ保存 | generated imageと表示しない |
+| Import行validation失敗 | 他の有効行は継続しbatchへerror indexを保存 | partial／failed batch |
+| Metadata／画像重複 | canonical recordを保持し新recordを除外 | duplicate lineageを表示 |
+| Reference image不正 | file・metadataを保存しない | 400 validation error |
+| Knowledge delete | 画像を消去後に本文・出典をtombstone化 | deleted、復元不可 |
 | Artifact hash mismatch | preview／exportを停止 | integrity error |
 | DB migration failure | transaction rollback | process start failure |
 
@@ -411,6 +444,7 @@ prompt本文やcredentialをmetric labelへ含めません。個人運用段階�
 
 - intent classification。
 - knowledge ranking。
+- context normalization、metadata fingerprint、perceptual hash distance。
 - Local Plan generation。
 - Claude tool result validationとserver-owned lineage。
 - HTML／Figma adapter output。
@@ -421,6 +455,7 @@ prompt本文やcredentialをmetric labelへ含めません。個人運用段階�
 - Request -> Plan -> Run -> Evaluation。
 - Claude未接続fallbackとAiRun audit。
 - migration from previous schema version。
+- JSON／JSONL partial import、rights filter、exclude／restore／delete、reference asset cleanup、v8→v9 migration。
 - output adapter disabled／missing target failure。
 - Figma delivery replay、run外operation拒否、完了状態の逆戻り防止、compound instance node ID、v7→v8 migration。
 - JSON／JSONL export compatibility。
@@ -446,7 +481,7 @@ prompt本文やcredentialをmetric labelへ含めません。個人運用段階�
 | 2. MCP facade | 2–3 days | shared read/write tools | Claude Code／Codexから同じuse caseを実行 |
 | 3. Candidate comparison | 2–3 days | Plan family、variant、lineage、dedupe | 同一Requestの有効なA/B比較 |
 | 4. Figma live adapter | 2–4 days | discovery、native nodes、validation | editable desktop/mobile Figma output |
-| 5. Research import | 2–3 days | provenance、license、dedupe、labels | safe contextual knowledge dataset |
+| 5. Research import | implemented | provenance、license、taxonomy、dedupe、lifecycle、snapshot | safe contextual knowledge dataset |
 | 6. Operational evaluation | 1–2 days | multiple real briefs | measured quality、cost、failure backlog |
 
 日程は外部account、Figma file、review待ちを除く開発目安です。進捗、実績、変更判断はGit外のtasks-mdへ記録します。

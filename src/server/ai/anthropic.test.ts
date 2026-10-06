@@ -29,8 +29,16 @@ const knowledge: KnowledgeItem = {
   contexts: ['landing-page'],
   concepts: ['信頼感'],
   evidence: '初期設計仮説',
-  provenance: { sourceType: 'system', sourceUri: null, license: null, trainingEligible: true, capturedAt: createdAt },
+  provenance: { sourceType: 'system', sourceUri: null, license: null, rightsStatus: 'verified', trainingEligible: true, capturedAt: createdAt },
+  lifecycle: 'active',
+  lifecycleReason: null,
+  metadataFingerprint: 'a'.repeat(64),
+  duplicateOfId: null,
+  duplicateKind: null,
+  importBatchId: null,
   createdAt,
+  updatedAt: createdAt,
+  deletedAt: null,
 };
 const style: StyleProfile = {
   id: randomUUID(),
